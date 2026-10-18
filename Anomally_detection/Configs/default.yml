@@ -80,4 +80,6 @@ evaluate:
   iou: 0.6
 
 export:
-  format: null             # e.g. onnx | coreml | torchscript (null to skip)
+  format: null             # e.g. onnx | coreml | torchscript (null to skip); YOLO/export.py does onnx + int8 + openvino
+  calib_images: 200        # train images used to calibrate the ONNX INT8 ranges (YOLO/export.py)
+  int8_exclude: [detect]   # node-name substrings kept in float; detect = the Detect head (all-INT8 gives 0 boxes)
