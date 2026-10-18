@@ -143,6 +143,7 @@ def export(cfg, weights):
 def main():
     args = parse_args()
     cfg = load_config(args)
+    prepare(cfg)
     kwargs = train_kwargs(cfg)
     print_config(cfg, kwargs)
     if args.dry_run:
