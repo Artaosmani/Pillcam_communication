@@ -322,10 +322,8 @@ def main():
         qmodel = qat(model, cfg, train_ds, val_ds, out)
         int8 = to_int8(qmodel, cfg, samples, tfl)
         _, qv = scores(samples["val"], cfg, int8=int8)
-        _, fq = scores(samples["val"], cfg, model=qmodel)  # QAT shifts the logits: compare with its own float output
-        t_qat = pick_threshold(yv, fq, target)
-        drop = metrics(yv, fq, t_qat)["recall"] - metrics(yv, int8.logit(qv), t_qat)["recall"]
-        print(f"[int8] after QAT: drop {drop * 100:.1f} points vs the QAT float model")
+        drop = metrics(yv, fv, t_float)["recall"] - metrics(yv, int8.logit(qv), t_float)["recall"]
+        print(f"[int8] after QAT: drop {drop * 100:.1f} points")
 
     t_raw = int(pick_threshold(yv, qv, target))
     thr = {"target_recall": target,
