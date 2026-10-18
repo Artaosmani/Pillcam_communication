@@ -4,7 +4,9 @@ python Classifier/data.py [--config Configs/classifier.yml]   # print split size
 
 A sample is (path, label, box): label 1 = polyp, box = crop (y0, x0, y1, x1) as fractions, FULL = whole image.
 Kvasir-SEG positives keep their train/val/test assignment; extra positives and negatives get a seeded split with
-whole videos per split. An image (by hash) is used once at most.
+whole videos per split. An image (by hash) is used once at most. Kvasir v1 polyps that are cropped copies of a
+Kvasir-SEG image (labels/seg_twins.json, from twins.py) go to that image's split instead.
+The final split is written to Data/splits.json, which YOLO/dataset.py reads, so both models share it.
 """
 import argparse
 import json
@@ -18,7 +20,7 @@ import tensorflow as tf
 import tf_keras as keras
 from PIL import Image
 
-from common import DEFAULT_CONFIG, FULL, load_config, load_image, normalise, resolve
+from common import DEFAULT_CONFIG, FULL, ROOT, load_config, load_image, normalise, resolve
 
 SPLITS = ("train", "val", "test")
 IMG_EXT = {".jpg", ".jpeg", ".png"}
@@ -67,12 +69,26 @@ def thin_video(files, regex, stride):
     return groups
 
 
-def scan(cfg, sources, label, seen, name):
+def seg_twins(cfg, pos):
+    """{path of a v1 copy of a Kvasir-SEG image: that image's split}."""
+    t = cfg["paths"].get("twins")
+    if not t or not resolve(t).exists():
+        return {}
+    split_of = {Path(p).stem: s for s in SPLITS for p, _, _ in pos[s]}
+    twins_dir = resolve(cfg["paths"]["twins_dir"])
+    return {str(twins_dir / name): split_of[stem] for name, (stem, rms) in json.loads(resolve(t).read_text()).items()
+            if rms <= cfg["paths"]["twin_max_rms"] and stem in split_of}
+
+
+def scan(cfg, sources, label, seen, name, forced=None):
     """Scan folders, thin videos, drop images already in `seen` (hashes), split by group (seeded).
+    `forced` = {path: split} for images whose split is fixed (copies of Kvasir-SEG images); they skip the hash check.
 
     Returns ({split: samples}, capsule paths). `seen` is updated, so later calls never reuse an image.
     """
-    groups, capsule = defaultdict(list), set()
+    forced = forced or {}
+    groups, capsule, out = defaultdict(list), set(), {s: [] for s in SPLITS}
+    test_videos = {v for src in sources for v in src.get("test_videos") or []}
     for src in sources:
         d = resolve(src["dir"])
         files = sorted(p for p in d.rglob("*") if p.suffix.lower() in IMG_EXT) if d.is_dir() else []
@@ -81,8 +97,12 @@ def scan(cfg, sources, label, seen, name):
             continue
         kept = thin_video(files, src["video_regex"], src.get("stride", 1)) if src.get("video_regex") \
             else {p: str(p) for p in files}
-        n = 0
+        n = nf = 0
         for p, g in kept.items():
+            if str(p) in forced:
+                out[forced[str(p)]].append((str(p), label, FULL))
+                nf += 1
+                continue
             h = image_hash(p)
             if h in seen:
                 continue
@@ -91,13 +111,17 @@ def scan(cfg, sources, label, seen, name):
             n += 1
             if src.get("capsule"):
                 capsule.add(str(p))
-        print(f"[data] {name}: {src['dir']}: {len(files)} files -> {n} kept")
+        print(f"[data] {name}: {src['dir']}: {len(files)} files -> {n} kept" +
+              (f" + {nf} Kvasir-SEG copies in their Kvasir-SEG split" if nf else ""))
 
+    pinned = {k for k in groups if k.rsplit(":", 1)[-1] in test_videos}  # e.g. the video the capsule polyps are from
+    for k in sorted(pinned):
+        out["test"] += [(p, label, FULL) for p in groups.pop(k)]
     keys = sorted(groups)
     random.Random(cfg["train"]["seed"]).shuffle(keys)
     split = cfg["negatives"]["split"]
-    total, ends = sum(map(len, groups.values())), np.cumsum(split) / np.sum(split)
-    out, count = {s: [] for s in SPLITS}, 0
+    total, ends = max(sum(map(len, groups.values())), 1), np.cumsum(split) / np.sum(split)
+    count = 0
     for k in keys:
         s = SPLITS[min(int(np.searchsorted(ends, count / total, side="right")), 2)]
         out[s] += [(p, label, FULL) for p in groups[k]]
@@ -130,7 +154,8 @@ def build_samples(cfg):
     """{split: samples} plus the Kvasir-Capsule eval set (empty if those frames aren't there)."""
     pos = positives(cfg)
     seen = {image_hash(p) for split in pos.values() for p, _, _ in split}  # extra images must not repeat Kvasir-SEG
-    extra, _ = scan(cfg, (cfg.get("extra_positives") or {}).get("sources") or [], 1, seen, "extra positives")
+    extra, _ = scan(cfg, (cfg.get("extra_positives") or {}).get("sources") or [], 1, seen, "extra positives",
+                    seg_twins(cfg, pos))
     neg, capsule = scan(cfg, cfg["negatives"]["sources"], 0, seen, "negatives")
     if not any(neg.values()):
         raise SystemExit(NEGATIVES_HELP)
@@ -149,7 +174,17 @@ def build_samples(cfg):
     if cp.is_dir() and capsule_neg:
         capsule_set = [(str(p), 1, FULL) for p in sorted(cp.rglob("*")) if p.suffix.lower() in IMG_EXT] + capsule_neg
         print(f"[data] capsule eval: {len(capsule_set) - len(capsule_neg)} polyp + {len(capsule_neg)} no-polyp")
+    write_splits(cfg, samples, capsule_set)
     return samples, capsule_set
+
+
+def write_splits(cfg, samples, capsule_set):
+    """Data/splits.json: {split: [[path relative to the project root, label], ...]}, shared with YOLO/dataset.py."""
+    rel = lambda p: str(Path(p).resolve().relative_to(ROOT))
+    out = {s: sorted({(rel(p), y) for p, y, box in samples[s] if box == FULL}) for s in SPLITS}
+    out["capsule_eval"] = sorted({(rel(p), y) for p, y, _ in capsule_set})
+    resolve(cfg["paths"]["splits"]).write_text(json.dumps(out, indent=0))
+    print(f"[data] split -> {cfg['paths']['splits']}")
 
 
 def class_weights(samples):
