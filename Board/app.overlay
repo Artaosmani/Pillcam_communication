@@ -1,0 +1,6 @@
+/* One CDC-ACM UART on the default USB device controller (zephyr_udc0 = the high-speed USB on J3). */
+&zephyr_udc0 {
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};
