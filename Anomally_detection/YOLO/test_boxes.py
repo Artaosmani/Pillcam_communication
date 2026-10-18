@@ -4,7 +4,8 @@ python YOLO/test_boxes.py
 """
 import numpy as np
 
-from evaluate import iou, match
+from evaluate import match
+from runner import iou
 from run_boxes import Tracker
 
 b = np.array([0, 0, 10, 10.0])

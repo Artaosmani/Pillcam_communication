@@ -98,8 +98,12 @@ def write_stages(rows, path):
             w.writerow({c: (f"{r[c]:.4f}" if isinstance(r[c], float) else r[c]) for c in cols})
 
 
-def plot(rows, out_base, title_note="", subtitle=""):
+def plot(rows, out_base, title_note="", subtitle="", max_bars=0):
     vs.apply()
+    all_rows = rows
+    if max_bars and len(rows) > max_bars:  # panel A: first boxes only; panel B uses every box
+        rows = rows[:max_bars]
+        title_note += f" (first {max_bars} of {len(all_rows)})"
     n = len(rows)
     x = np.arange(n)
     labels = [f"{r['frame_id']}\nt{r['track_id']}" for r in rows]
@@ -153,7 +157,7 @@ def plot(rows, out_base, title_note="", subtitle=""):
     names = vs.STAGES + ["t_half_ms"]
     y = np.arange(len(names))[::-1]
     for yi, st in zip(y, names):
-        v = np.array([r[st] for r in rows if (st not in ("lookup", "decision", "t_half_ms") or r["inject"])])
+        v = np.array([r[st] for r in all_rows if (st not in ("lookup", "decision", "t_half_ms") or r["inject"])])
         v = v[v > 0]
         color = vs.PHYS_COLOR if st == "t_half_ms" else vs.STAGE_COLORS[st]
         if len(v) == 0:
@@ -187,13 +191,14 @@ def main():
     ap.add_argument("--real-boxes", action="store_true", help="treat detection times as real")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--subtitle", default="lookup = full PBS run per box until the lookup table exists")
+    ap.add_argument("--max-bars", type=int, default=0, help="stacked bars for the first N boxes only (0 = all)")
     a = ap.parse_args()
 
     os.makedirs(a.out_dir, exist_ok=True)
     boxes_fake = (not a.real_boxes) and "fake" in os.path.basename(a.boxes).lower()
     rows = build_stages(read_csv(a.boxes), read_csv(a.server), boxes_fake, a.seed)
     write_stages(rows, os.path.join(a.out_dir, "latency_stages.csv"))
-    plot(rows, os.path.join(a.out_dir, "latency_breakdown"), subtitle=a.subtitle)
+    plot(rows, os.path.join(a.out_dir, "latency_breakdown"), subtitle=a.subtitle, max_bars=a.max_bars)
     print(f"{len(rows)} boxes -> {a.out_dir}/latency_breakdown.png, latency_stages.csv")
 
 

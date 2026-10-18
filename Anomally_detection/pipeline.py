@@ -99,7 +99,8 @@ def summary(out, board, yolo_model, threads):
                           "how": "USB CDC-ACM board->host incl. frame bytes, Board/receiver.py" if usb else
                           "not measured on the PC-only run (0 in the timeline)"},
         "4_yolo_pc_cpu": {**pct([float(r["yolo_ms"]) for r in tim]), "label": "measured",
-                          "how": f"{yolo_model.name}, onnxruntime/OpenVINO CPU, {threads} threads, pre+infer+post"},
+                          "how": f"{yolo_model.name} ({'OpenVINO, FP16 compute on ARM' if yolo_model.is_dir() else 'onnxruntime'}), "
+                                 f"PC CPU, {threads} threads, pre+infer+post"},
         "4a_yolo_pre": pct([float(r["pre_ms"]) for r in tim]),
         "4b_yolo_infer": pct([float(r["infer_ms"]) for r in tim]),
         "4c_yolo_post": pct([float(r["post_ms"]) for r in tim]),
@@ -142,7 +143,7 @@ def main():
     replay = build_replay()
     run([replay, "--csv", out / "boxes.csv", "--out", out / "bbox_replay_out.csv", *shlex.split(a.replay_args)])
     run([PY, PBS / "visualizers/plot_latency_breakdown.py", "--boxes", out / "boxes.csv",
-         "--server", out / "bbox_replay_out.csv", "--out-dir", out,
+         "--server", out / "bbox_replay_out.csv", "--out-dir", out, "--max-bars", 20,
          "--subtitle", "detection = measured (" + ("board" if a.clf else "PC stand-in for the board") +
          " + YOLO); capture and network still fake; lookup = full PBS run per box"],
         cwd=PBS / "visualizers")
@@ -154,8 +155,8 @@ def parse_args():
     p.add_argument("--frames", type=Path, default=ROOT / "Data/test/frames")
     p.add_argument("--classifier", type=Path, default=ROOT / "runs/classifier_84/model_int8.tflite")
     p.add_argument("--clf", type=Path, help="use this classifier CSV (e.g. from the board) instead of running it here")
-    p.add_argument("--yolo", type=Path, default=ROOT / "runs/yolo26n/weights/best_int8.onnx")
-    p.add_argument("--threads", type=int, default=2)
+    p.add_argument("--yolo", type=Path, default=ROOT / "runs/yolo26n/weights/best_openvino_model")
+    p.add_argument("--threads", type=int, default=4)
     p.add_argument("--out", type=Path, default=Path("runs/pipeline"))
     p.add_argument("--replay-args", default="", help='passed to bbox_replay, e.g. --replay-args="--rows 20"')
     return p.parse_args()

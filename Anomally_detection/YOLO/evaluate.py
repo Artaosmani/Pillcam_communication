@@ -2,7 +2,8 @@
 
 python YOLO/evaluate.py --weights runs/yolo26n/weights/best.pt            # .pt + exports found next to it
 
-Per format (pt, onnx = FP32, int8 = ONNX INT8, if the file exists):
+Per format (pt, onnx = FP32, int8 = ONNX INT8, openvino_fp16 = the OpenVINO IR, which OpenVINO runs in FP16 on ARM
+CPUs by default; each if the file exists):
   - ultralytics val on `test` (Kvasir-SEG test + every test negative as background) and `test_pos` (polyps only):
     precision, recall, mAP50, mAP50-95 (conf 0.001, as usual for mAP)
   - at the deployment confidence: box tightness on test_pos (greedy IoU >= 0.5 matching per image, highest confidence
@@ -23,19 +24,11 @@ import yaml
 from ultralytics import YOLO
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from runner import Detector  # noqa: E402
+from runner import Detector, iou  # noqa: E402
 from src import DEFAULT_CONFIG, data_yaml_path, resolve  # noqa: E402
 from train import resolve_device  # noqa: E402
 
 FRAME = 336  # board frame side; box errors are also reported at this scale
-
-
-def iou(a, b):
-    """IoU of one box a (4,) with boxes b (N, 4)."""
-    x0, y0 = np.maximum(a[0], b[:, 0]), np.maximum(a[1], b[:, 1])
-    x1, y1 = np.minimum(a[2], b[:, 2]), np.minimum(a[3], b[:, 3])
-    inter = (x1 - x0).clip(0) * (y1 - y0).clip(0)
-    return inter / ((a[2] - a[0]) * (a[3] - a[1]) + (b[:, 2] - b[:, 0]) * (b[:, 3] - b[:, 1]) - inter)
 
 
 def gt_boxes(label_path, w, h):
@@ -97,6 +90,8 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     p.add_argument("--weights", type=Path, required=True, help="best.pt; exports are looked up next to it")
+    p.add_argument("--formats", nargs="+", default=["pt", "onnx", "int8", "openvino_fp16"],
+                   help="formats to (re)evaluate; others already in metrics_eval.json are kept")
     a = p.parse_args()
     cfg = yaml.safe_load(a.config.read_text())
     data, imgsz = str(data_yaml_path(cfg)), cfg["train"]["imgsz"]
@@ -109,19 +104,22 @@ def main():
     print(f"[eval] deployment confidence {conf:.3f} (val F1 {f1.max():.3f})")
 
     formats = {"pt": a.weights, "onnx": a.weights.with_suffix(".onnx"),
-               "int8": a.weights.with_name(f"{a.weights.stem}_int8.onnx")}
-    out = {"weights": str(a.weights), "imgsz": imgsz, "deploy_conf": conf, "formats": {}}
-    for name, path in formats.items():
-        if not path.exists():
+               "int8": a.weights.with_name(f"{a.weights.stem}_int8.onnx"),
+               "openvino_fp16": a.weights.with_name(f"{a.weights.stem}_openvino_model")}
+    path = a.weights.parent.parent / "metrics_eval.json"
+    old = json.loads(path.read_text()) if path.exists() else {}
+    out = {"weights": str(a.weights), "imgsz": imgsz, "deploy_conf": conf,
+           "formats": old.get("formats", {}) if old.get("deploy_conf") == conf else {}}
+    for name, path_ in formats.items():
+        if name not in a.formats or not path_.exists():
             continue
         dev = resolve_device("auto") if name == "pt" else "cpu"
-        r = {"test": val(path, data, "test", imgsz, dev)[1], "test_pos": val(path, data, "test_pos", imgsz, dev)[1]}
-        det = Detector(formats["onnx"] if name == "pt" else path, conf=conf)  # pt boxes = FP32 ONNX boxes
+        r = {"test": val(path_, data, "test", imgsz, dev)[1], "test_pos": val(path_, data, "test_pos", imgsz, dev)[1]}
+        det = Detector(formats["onnx"] if name == "pt" else path_, conf=conf)  # pt boxes = FP32 ONNX boxes
         r["tightness"] = tightness(det, ds["test_pos"])
         r["false_alarms"] = false_alarms(det, ds["test"])
         out["formats"][name] = r
         print(f"[eval] {name}: {json.dumps(r)}")
-    path = a.weights.parent.parent / "metrics_eval.json"
     path.write_text(json.dumps(out, indent=2))
     print(f"[eval] -> {path}")
 

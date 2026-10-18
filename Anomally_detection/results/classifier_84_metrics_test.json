@@ -1,0 +1,71 @@
+{
+  "split": "test",
+  "model": {
+    "params": 218801,
+    "macs": 6156640,
+    "imgsz": 84,
+    "tflite_bytes": 304376,
+    "peak_activation_bytes": 42336,
+    "ops": [
+      "AVERAGE_POOL_2D",
+      "CONV_2D",
+      "DEPTHWISE_CONV_2D"
+    ],
+    "non_axon_ops": [],
+    "qat": false,
+    "val_recall_drop_int8": -0.006451612903225712,
+    "pc_tflite_latency": {
+      "median_ms": 0.32829149859026074,
+      "p95_ms": 0.38858366606291384,
+      "runs": 200,
+      "threads": 1
+    },
+    "pc_latency_note": "TFLite interpreter on this PC, 1 thread. NOT the nRF54LM20 board latency."
+  },
+  "threshold": {
+    "target_recall": 0.95,
+    "float": {
+      "logit": -0.011926762759685516,
+      "prob": 0.4970183446544553
+    },
+    "int8": {
+      "raw": 30,
+      "logit": 0.7485477924346924,
+      "prob": 0.6788621881149801
+    }
+  },
+  "float": {
+    "n": 801,
+    "positives": 153,
+    "negatives": 648,
+    "threshold": -0.011926762759685516,
+    "recall": 0.9673202614379085,
+    "precision": 0.9673202614379085,
+    "f1": 0.9673202614379085,
+    "specificity": 0.9922839506172839,
+    "roc_auc": 0.9987392076172033,
+    "confusion_matrix": {
+      "tn": 643,
+      "fp": 5,
+      "fn": 5,
+      "tp": 148
+    }
+  },
+  "int8": {
+    "n": 801,
+    "positives": 153,
+    "negatives": 648,
+    "threshold": 30,
+    "recall": 0.9607843137254902,
+    "precision": 0.9865771812080537,
+    "f1": 0.9735099337748345,
+    "specificity": 0.9969135802469136,
+    "roc_auc": 0.9984820059711127,
+    "confusion_matrix": {
+      "tn": 646,
+      "fp": 2,
+      "fn": 6,
+      "tp": 147
+    }
+  }
+}

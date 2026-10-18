@@ -3,8 +3,8 @@
 python YOLO/bench.py --weights runs/yolo26n/weights/best.pt [--threads 1 2 4] [--runs 200] [--warmup 20]
 
 Input = the real pipeline input: test polyp images squashed to 336×336 BGR frames, decoded before timing (decode is
-not part of the YOLO stage). For each format (onnx_fp32, onnx_int8, openvino_fp32, openvino_int8 = the QDQ INT8 ONNX
-compiled by OpenVINO) and thread count: `warmup` untimed frames, then `runs` timed frames, one at a time (batch 1).
+not part of the YOLO stage). For each format (onnx_fp32, onnx_int8, openvino_fp16 = the FP32 IR, which OpenVINO runs in
+FP16 on ARM CPUs by default, openvino_int8 = the QDQ INT8 ONNX compiled by OpenVINO) and thread count: `warmup` untimed frames, then `runs` timed frames, one at a time (batch 1).
 Stages: pre (letterbox + normalise), infer, post (threshold/NMS + rescale), total. Reports p50/p95/mean in ms.
 Run on an otherwise idle machine. Writes <out>/yolo_bench.json and .csv (default out: results/).
 """
@@ -50,7 +50,7 @@ def main():
     cfg = yaml.safe_load(a.config.read_text())
     w = a.weights
     formats = {"onnx_fp32": (w.with_suffix(".onnx"), None), "onnx_int8": (w.with_name(f"{w.stem}_int8.onnx"), None),
-               "openvino_fp32": (w.with_name(f"{w.stem}_openvino_model"), None),
+               "openvino_fp16": (w.with_name(f"{w.stem}_openvino_model"), None),
                "openvino_int8": (w.with_name(f"{w.stem}_int8.onnx"), "openvino")}
     conf = json.loads((w.parent / "deploy.json").read_text())["conf"] if (w.parent / "deploy.json").exists() else 0.25
 

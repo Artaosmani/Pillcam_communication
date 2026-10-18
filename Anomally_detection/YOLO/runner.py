@@ -5,6 +5,7 @@ Shared by bench.py, evaluate.py and run_boxes.py so the benchmarked code is the 
     det = Detector("runs/yolo26n/weights/best.onnx", threads=2, conf=0.25)
     boxes, t = det(img_bgr)   # boxes: N×5 [x0, y0, x1, y1, conf] in input-image pixels; t: pre/infer/post seconds
 """
+import re
 import time
 from pathlib import Path
 
@@ -77,3 +78,17 @@ class Detector:
         boxes = self.postprocess(out, meta)
         t3 = time.perf_counter()
         return boxes, {"pre": t1 - t0, "infer": t2 - t1, "post": t3 - t2}
+
+
+def iou(a, b):
+    """IoU of one box a (4,) with boxes b (N, 4)."""
+    x0, y0 = np.maximum(a[0], b[:, 0]), np.maximum(a[1], b[:, 1])
+    x1, y1 = np.minimum(a[2], b[:, 2]), np.minimum(a[3], b[:, 3])
+    inter = (x1 - x0).clip(0) * (y1 - y0).clip(0)
+    return inter / ((a[2] - a[0]) * (a[3] - a[1]) + (b[:, 2] - b[:, 0]) * (b[:, 3] - b[:, 1]) - inter)
+
+
+def frame_paths(folder):
+    """{frame_id: path}, id = last number in the filename (same rule as Classifier/run_csv.py)."""
+    return {int(re.findall(r"\d+", p.stem)[-1]): p for p in Path(folder).iterdir()
+            if p.suffix.lower() in {".jpg", ".jpeg", ".png"}}

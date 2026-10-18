@@ -24,9 +24,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "Classifier"))
-from evaluate import iou  # noqa: E402
-from runner import Detector  # noqa: E402
+from runner import Detector, frame_paths, iou  # noqa: E402  (no TF / torch in this process: they clash with OpenVINO)
 
 COLUMNS = ["frame_id", "track_id", "t_capture_ns", "t_detect_ns", "t_send_ns",
            "x_min", "y_min", "x_max", "y_max", "img_w", "img_h", "confidence"]
@@ -54,12 +52,6 @@ class Tracker:
             self.tracks[best] = (fid, b[:4])
             ids.append(best)
         return ids
-
-
-def frame_paths(folder):
-    """{frame_id: path}, id = last number in the filename (same rule as Classifier/run_csv.py)."""
-    from run_csv import frames
-    return dict(frames(folder))
 
 
 def main():

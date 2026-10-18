@@ -1,0 +1,74 @@
+{
+  "1_frame_to_board": {
+    "p50_ms": null,
+    "p95_ms": null,
+    "n": 0,
+    "label": "placeholder",
+    "how": "not measured: needs the board (lab) or the pill radio link (real system)"
+  },
+  "2a_board_preprocess": {
+    "p50_ms": 1.88,
+    "p95_ms": 2.114,
+    "n": 801,
+    "label": "host estimate",
+    "how": "PC: JPEG decode + area resize + normalise"
+  },
+  "2b_board_inference": {
+    "p50_ms": 0.245,
+    "p95_ms": 0.266,
+    "n": 801,
+    "label": "host estimate",
+    "how": "host estimate (PC TFLite interpreter, 1 thread, built-in kernels without XNNPACK; NOT the nRF54LM20 board)"
+  },
+  "3_board_to_pc": {
+    "p50_ms": null,
+    "p95_ms": null,
+    "n": 0,
+    "label": "placeholder",
+    "how": "not measured on the PC-only run (0 in the timeline)"
+  },
+  "4_yolo_pc_cpu": {
+    "p50_ms": 9.6475,
+    "p95_ms": 16.02384999999999,
+    "n": 150,
+    "label": "measured",
+    "how": "best_openvino_model (OpenVINO, FP16 compute on ARM), PC CPU, 4 threads, pre+infer+post"
+  },
+  "4a_yolo_pre": {
+    "p50_ms": 0.638,
+    "p95_ms": 0.8824999999999995,
+    "n": 150
+  },
+  "4b_yolo_infer": {
+    "p50_ms": 8.8895,
+    "p95_ms": 14.917999999999997,
+    "n": 150
+  },
+  "4c_yolo_post": {
+    "p50_ms": 0.07,
+    "p95_ms": 0.18724999999999975,
+    "n": 150
+  },
+  "5_simulation_per_box": {
+    "p50_ms": 783.518,
+    "p95_ms": 821.4566,
+    "n": 149,
+    "label": "measured",
+    "how": "bbox_replay process_box() wall time (full PBS run per box until the lookup table exists)"
+  },
+  "detection_total": {
+    "p50_ms": 11.835375,
+    "p95_ms": 18.566204700000004,
+    "n": 143,
+    "budget_p95_ms": 100.0,
+    "within_budget": true,
+    "label": "host estimate",
+    "how": "t_detect - t_capture per frame with boxes = stage 2 + 3 + 4 (stage 1 not included)"
+  },
+  "counts": {
+    "frames": 801,
+    "detected": 150,
+    "frames_with_boxes": 143,
+    "boxes": 149
+  }
+}
