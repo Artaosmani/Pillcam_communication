@@ -34,7 +34,11 @@ under 100 ms. That is an estimate until the board numbers exist.
    speed-up (Melwin), outside detection.
 7. **Placeholders kept on purpose.** Pixel → mm mapping in `box_to_geometry()`; *capture* and *network* in the
    latency figure are still the visualizer's fake values.
-8. **YOLO26n-P2** is training overnight; its results are added to this report when it finishes.
+8. **YOLO26n-P2** (extra stride-4 head) finds more polyps (mAP50 0.943 vs 0.930, 99 vs 95 of 104 matched) but its
+   boxes are looser (mAP50-95 0.69 vs 0.73, mean IoU 0.873 vs 0.894, ~11 vs ~9 px error, ~4 px too narrow), it raises
+   more false alarms (11 vs 7 of 648) and is ~30 % slower (15.2 vs 11.7 ms p95). Box tightness is the priority for
+   the simulator, so **YOLO26n stays the default**. Part of P2's recall gain comes from its lower deployment
+   confidence (0.25 vs 0.39). Kvasir-SEG has few small polyps, so the case P2 is designed for is barely tested here.
 9. **Small test sets.** 100 Kvasir-SEG test polyps for the boxes, 153 polyp frames for the classifier (53 of them are
    Kvasir v1 copies of Kvasir-SEG test images in the uncropped format), 55 capsule polyps from one video. Read
    differences of a point or two as noise.
