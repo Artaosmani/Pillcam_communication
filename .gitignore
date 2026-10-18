@@ -24,3 +24,4 @@ Anomally_detection/Data/downloads/
 *_openvino_model/
 .DS_Store
 PBS/drift/bbox_replay
+!Anomally_detection/results/**/*.tflite
