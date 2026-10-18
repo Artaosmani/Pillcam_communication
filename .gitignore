@@ -9,3 +9,17 @@ Data/.DS_Store
 *.keras
 *.tflite
 runs/classifier*/
+
+# datasets and training weights stay out of git (kept on disk)
+Anomally_detection/Data/**/*.jpg
+Anomally_detection/Data/**/*.jpeg
+Anomally_detection/Data/**/*.png
+Anomally_detection/Data/negatives/
+Anomally_detection/Data/kvasir-capsule/
+Anomally_detection/Data/yolo-split/
+Anomally_detection/Data/frames*/
+Anomally_detection/Data/downloads/
+*.pt
+*.onnx
+*_openvino_model/
+.DS_Store
