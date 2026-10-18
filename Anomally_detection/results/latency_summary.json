@@ -70,5 +70,15 @@
     "detected": 150,
     "frames_with_boxes": 143,
     "boxes": 149
+  },
+  "end_to_end": {
+    "gt_box_frames": 100,
+    "gt_box_frames_flagged": 99,
+    "gt_box_frames_correct_box": 91,
+    "polyp_frames": 153,
+    "polyp_frames_with_box": 143,
+    "negative_frames": 648,
+    "negative_frames_flagged": 3,
+    "negative_frames_with_box": 0
   }
 }

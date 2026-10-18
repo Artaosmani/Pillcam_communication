@@ -76,8 +76,29 @@ def pct(v):
         else {"p50_ms": None, "p95_ms": None, "n": 0}
 
 
-def summary(out, board, yolo_model, threads):
-    """Per-stage p50/p95 with where/how each number was measured."""
+def end_to_end(clf, boxes, test_dir):
+    """Classifier + YOLO together on the replay frames: Kvasir-SEG frames with a correct box (IoU >= 0.5), polyp frames
+    with any box, and polyp-free frames that end with a box (false injections)."""
+    if not (test_dir / "labels.csv").exists():
+        return None
+    from YOLO.runner import iou
+    lab = {int(r["frame_id"]): int(r["polyp"]) for r in csv.DictReader(open(test_dir / "labels.csv"))}
+    gt, pred = {}, {}
+    for r in csv.DictReader(open(test_dir / "gt_boxes.csv")):
+        gt.setdefault(int(r["frame_id"]), []).append([float(r[k]) for k in ("x_min", "y_min", "x_max", "y_max")])
+    for r in boxes:
+        pred.setdefault(int(r["frame_id"]), []).append([float(r[k]) for k in ("x_min", "y_min", "x_max", "y_max")])
+    flagged = {int(r["frame_id"]) for r in clf if int(r["detected"])}
+    correct = sum(f in pred and any(iou(np.array(g), np.array(pred[f])).max() >= 0.5 for g in gt[f]) for f in gt)
+    pos, neg = [f for f, y in lab.items() if y], [f for f, y in lab.items() if not y]
+    return {"gt_box_frames": len(gt), "gt_box_frames_flagged": len(flagged & set(gt)), "gt_box_frames_correct_box": correct,
+            "polyp_frames": len(pos), "polyp_frames_with_box": sum(f in pred for f in pos),
+            "negative_frames": len(neg), "negative_frames_flagged": len(flagged & set(neg)),
+            "negative_frames_with_box": sum(f in pred for f in neg)}
+
+
+def summary(out, board, yolo_model, threads, frames_dir):
+    """Per-stage p50/p95 with where/how each number was measured, plus the end-to-end counts."""
     clf = list(csv.DictReader(open(out / "classifier.csv")))
     tim = list(csv.DictReader(open(out / "boxes.timing.csv")))
     rep = list(csv.DictReader(open(out / "bbox_replay_out.csv")))
@@ -117,11 +138,13 @@ def summary(out, board, yolo_model, threads):
                             "label": "measured" if board else "host estimate",
                             "how": "t_detect - t_capture per frame with boxes = stage 2 + 3 + 4 (stage 1 not included)"}
     s["counts"] = {"frames": len(clf), "detected": len(det), "frames_with_boxes": len(first), "boxes": len(boxes)}
+    s["end_to_end"] = end_to_end(clf, boxes, frames_dir.parent)
     (out / "latency_summary.json").write_text(json.dumps(s, indent=2))
     for k, v in s.items():
-        if "p50_ms" in v and v["p50_ms"] is not None:
+        if v and "p50_ms" in v and v["p50_ms"] is not None:
             print(f"[latency] {k:22s} p50 {v['p50_ms']:8.2f}  p95 {v['p95_ms']:8.2f} ms  {v.get('label', '')}")
     print(f"[latency] counts {s['counts']}")
+    print(f"[end-to-end] {s['end_to_end']}")
 
 
 def main():
@@ -147,7 +170,7 @@ def main():
          "--subtitle", "detection = measured (" + ("board" if a.clf else "PC stand-in for the board") +
          " + YOLO); capture and network still fake; lookup = full PBS run per box"],
         cwd=PBS / "visualizers")
-    summary(out, bool(a.clf), a.yolo, a.threads)
+    summary(out, bool(a.clf), a.yolo, a.threads, a.frames)
 
 
 def parse_args():

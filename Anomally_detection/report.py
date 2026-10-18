@@ -102,10 +102,14 @@ def yolo_section(runs):
 
 
 def bench_section():
-    b = load(OUT / "yolo_bench.json")
-    if not b:
-        return []
-    lines = ["### YOLO26n CPU latency on this PC (measured)", "",
+    lines = []
+    for path in sorted(OUT.glob("yolo_bench_*.json")):
+        lines += bench_table(load(path), path.stem.removeprefix("yolo_bench_")) + [""]
+    return lines
+
+
+def bench_table(b, run):
+    lines = [f"### {run}: CPU latency on this PC (measured)", "",
              f"{b['machine']['cpu']}, {b['machine']['platform']}; batch 1, {b['frame']} frames, {b['warmup']} warm-up + "
              f"{b['runs']} timed frames per row, one model at a time on an idle machine. p50 / p95 in ms.", "",
              "| Format | Threads | Pre | Infer | Post | **Total** |", "|---|---|---|---|---|---|"]
@@ -140,6 +144,14 @@ def latency_section(pipe):
               "![latency breakdown](latency_breakdown.png)", "",
               "In the figure, *detection* is the measured value from this run; *capture* and *network* are still the "
               "visualizer's fake values (hatched); *lookup* is the full PBS run per box until the lookup table exists."]
+    e = s.get("end_to_end")
+    if e:
+        lines += ["", "### End to end (classifier + YOLO26n on the replay frames)", "", "| | |", "|---|---|",
+                  f"| Kvasir-SEG polyp frames flagged by the classifier | {e['gt_box_frames_flagged']} / {e['gt_box_frames']} |",
+                  f"| Kvasir-SEG polyp frames ending with a correct box (IoU ≥ 0.5) | **{e['gt_box_frames_correct_box']} / {e['gt_box_frames']}** |",
+                  f"| All polyp frames ending with any box | {e['polyp_frames_with_box']} / {e['polyp_frames']} |",
+                  f"| Polyp-free frames flagged by the classifier | {e['negative_frames_flagged']} / {e['negative_frames']} |",
+                  f"| Polyp-free frames ending with a box (false injection) | **{e['negative_frames_with_box']} / {e['negative_frames']}** |"]
     return lines
 
 
