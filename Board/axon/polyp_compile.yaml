@@ -2,7 +2,7 @@
 #   python scripts/axons_ml_nn_compiler_executor.py <path>/Board/axon/polyp_compile.yaml
 # Paths are relative to where you run it, or absolute. See the add-on docs for every key.
 MODEL_NAME: polyp                                   # -> nrf_axon_model_polyp_.h, symbol nrf_axon_model_polyp
-TFLITE_MODEL: <path>/Anomally_detection/runs/classifier_96/model_int8.tflite
+TFLITE_MODEL: <path>/Anomally_detection/runs/classifier_84/model_int8.tflite
 # Optional, to get the compiler's accuracy / quantisation-loss report and test vectors:
 # FLOAT_MODEL: ...
 # TEST_DATA: ...

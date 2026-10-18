@@ -34,12 +34,13 @@ so an upper bound for board → PC).
 
 ## Steps
 
-1. **Train and export** (`Anomally_detection/Classifier/train.py`). Copy `runs/classifier_96/model_int8.h` to
+1. **Train and export** (`Anomally_detection/Classifier/train.py`). Copy `runs/classifier_84/model_int8.h` to
    `Board/src/model_int8.h`. Only its constants and `polyp_input_lut` are used, not the embedded `.tflite`.
-   For the 84×84 model use `runs/classifier_84/` (the app picks the decode scale from `POLYP_INPUT_SIZE`).
+   84×84 is the default: its INT8 test recall is higher than the 96×96 model's, and a 1/4-scale JPEG decode gives the
+   input directly. For 96×96 use `runs/classifier_96/` (the app picks the decode scale from `POLYP_INPUT_SIZE`).
 2. **Check the ops** with the add-on's scanner (it prints `PASS` or `FAIL` with details):
    ```bash
-   python axons_tflite_model_scan.py <full path>/runs/classifier_96/model_int8.tflite
+   python axons_tflite_model_scan.py <full path>/runs/classifier_84/model_int8.tflite
    ```
    The model contains only `CONV_2D`, `DEPTHWISE_CONV_2D` and `AVERAGE_POOL_2D` (no PAD, MEAN, RESHAPE, sigmoid).
 3. **Compile for Axon.** Set the `.tflite` path in `axon/polyp_compile.yaml`, then from the add-on's
