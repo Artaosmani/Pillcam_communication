@@ -27,25 +27,30 @@ conda activate anomaly_detection
 pip install -r requirements-classifier.txt
 ```
 
-### Negatives (no polyp)
+### Data and the shared split
 
-These aren't in the repo; download and unpack them yourself:
+| Folder | What | Used as |
+|---|---|---|
+| `Data/kvasir-seg-split/` | Kvasir-SEG, 800 / 100 / 100 with YOLO labels | positives (both models) |
+| `Data/kvasir/kvasir-dataset/polyps` | Kvasir v1 polyps: 492 of 500 are Kvasir-SEG images with the border cropped | extra positives, each copy in its Kvasir-SEG image's split |
+| `Data/negatives/hyperkvasir/` | HyperKvasir labelled, lower GI: cecum, ileum, bbps-0-1, bbps-2-3 | negatives |
+| `Data/negatives/kvasir-capsule/` | Kvasir-Capsule "Normal clean mucosa" (34,338 frames, 37 videos), one frame per 15, whole videos per split | negatives + capsule eval |
+| `Data/kvasir/kvasir-dataset/{ulcerative-colitis,dyed-resection-margins}` | Kvasir v1 | negatives |
+| `Data/kvasir-capsule/polyp/` | Kvasir-Capsule polyps, 55 frames, all from video `131368cc17e44240` | capsule eval only |
 
-- HyperKvasir labelled images, lower GI normals only (`cecum`, `ileum`, `bbps-0-1`, `bbps-2-3`) → `Data/negatives/hyperkvasir/<class>/*.jpg`
-- Kvasir-Capsule labelled images, `Normal clean mucosa` → `Data/negatives/kvasir-capsule/*.jpg`, keeping the
-  `<video>_<frame>.jpg` names so frames are thinned to one per 15 and each video stays in one split
-- Kvasir-Capsule `Polyp` frames → `Data/kvasir-capsule/polyp/` (only used for the domain-shift eval, never for training)
+Download: `hyper-kvasir-labeled-images.zip` (3.9 GB) and `kvasir-capsule-labeled-images.zip` (0.55 GB) from
+datasets.simula.no; unpack only the classes above. Upper-GI classes (z-line, pylorus) are not used.
 
-Until then, training uses Kvasir v1 `normal-cecum`, `ulcerative-colitis` and `dyed-resection-margins` (already in
-`Data/kvasir/`). Identical frames across sources are dropped by image hash. Upper-GI classes (z-line, pylorus) are
-deliberately not used as negatives.
-
-### Extra positives
-
-`extra_positives.sources` adds Kvasir v1 `polyps` (minus the images that are also in Kvasir-SEG), split the same way
-as the negatives. Without them every polyp was a cropped Kvasir-SEG image and every negative a 720×576 Kvasir v1
-image. The model then learned the image format instead of the polyp: 0.98 recall on its own test split, but only
-0.14 on held-out Kvasir v1 polyps. With polyps in both formats, the format no longer predicts the answer.
+`Classifier/data.py` writes **`Data/splits.json`**, the one train/val/test split both models read. Duplicates are
+handled like this:
+- Kvasir-SEG images are cropped Kvasir frames, so an image hash misses the copies. `Classifier/twins.py` matches
+  every Kvasir v1 polyp against Kvasir-SEG (masked pixel difference) → `labels/seg_twins.json`. Copies stay in their
+  Kvasir-SEG image's split, so the same polyp never sits in train and test.
+- Kvasir v1 `normal-cecum` is not used: HyperKvasir cecum contains it, cropped as well.
+- The capsule polyp video is pinned to test, so none of its normal frames are trained on.
+- The old `Data/test` (50 + 50 images moved out of Kvasir v1) was not held out: 37 of its 47 checked polyps were Kvasir-SEG
+  images, 28 of them in Kvasir-SEG train. Those images are back in their folders; `Data/test` is now built by
+  `pipeline.py` (see below).
 
 ### Train and export
 
@@ -80,7 +85,7 @@ The Nordic tools come from the nRF Connect SDK **Edge AI add-on** (not installed
    `DEPTHWISE_CONV_2D` and `AVERAGE_POOL_2D`.
 2. Compile the same `.tflite` with the add-on's Axon TFLite compiler to get the NPU command stream for the firmware.
 
-Check the add-on documentation for the exact script locations and arguments for your SDK version.
+Exact commands, the compiler YAML, the firmware and the PC receiver: [`Board/README.md`](Board/README.md).
 
 ### CSV for the PC side
 
@@ -100,16 +105,13 @@ YOLO26n results join on it. On the PC the timestamps come from the host clock; t
 
 ### Held-out test set
 
-`Data/test/images/test_0001..0100.jpg` holds 50 polyp and 50 no-polyp images that were moved out of
-`Data/kvasir/kvasir-dataset/` (Kvasir v1 `polyps`, `normal-cecum`, `ulcerative-colitis`, `dyed-resection-margins`),
-so no training run can see them. `Data/test/labels.csv` has `frame_id,file,polyp,source`, where `polyp` is 1/0 and
-`source` is the original path. None of these images duplicates a Kvasir-SEG image or another image left behind.
+`Data/test/frames/frame_NNNNNN.jpg` are the 801 test-split images (153 polyp, 648 no-polyp) as 336×336 JPEG
+replay frames, built by `pipeline.py` on first run. `Data/test/labels.csv` has `frame_id,file,polyp,source`, and
+`Data/test/gt_boxes.csv` has the Kvasir-SEG boxes at 336 px.
 
 ```bash
-python Classifier/run_csv.py --frames Data/test/images --labels Data/test/labels.csv --model runs/classifier/model_int8.tflite
+python Classifier/run_csv.py --frames Data/test/frames --labels Data/test/labels.csv --model runs/classifier_96/model_int8.tflite
 ```
-
-This writes the CSV plus `<csv>.metrics.json` (recall, precision, F1, specificity, AUC, confusion matrix).
 
 ### Design choices for the NPU
 
@@ -126,12 +128,27 @@ This writes the CSV plus `<csv>.metrics.json` (recall, precision, F1, specificit
   output quantiser, which exports as an extra int8 → int8 `QUANTIZE` op (not an Axon op). `train.py` turns that
   quantiser off, so the QAT export uses the same three ops. `train.py` still warns if any other op appears.
 
-### Still open
+## YOLO26n
 
-- Board firmware: load the compiled model, the 1/4-scale JPEG decode or area resize, the input LUT and the threshold
-  compare.
-- USB transfer: one result line per frame plus the frame for `detected=1`, over the J3 high-speed USB port.
-- Real latency on the board: measure on the nRF54LM20 DK; Nordic's figure for this architecture at 96×96 is
-  about 14.4 ms on Axon.
-- Capsule data: all training images are colonoscopy frames. How well the model works on capsule frames is unknown
-  until the Kvasir-Capsule frames are in and `metrics_capsule.json` exists.
+`Configs/default.yml`; `YOLO/src.py` builds `Data/yolo-split/` from Kvasir-SEG plus the shared-split negatives as
+background images (empty label files): train/val get 0.5 × the polyp count, test gets every test negative.
+
+```bash
+python YOLO/train.py --name yolo26n                              # 150 epochs, patience 30, imgsz 352
+python YOLO/train.py --model Configs/yolo26.yml --name yolo26n_p2   # P2 head for small polyps
+python YOLO/export.py   --weights runs/yolo26n/weights/best.pt    # ONNX FP32, ONNX INT8 (head kept float), OpenVINO
+python YOLO/evaluate.py --weights runs/yolo26n/weights/best.pt    # P/R/mAP, box tightness, false alarms, deploy.json
+python YOLO/bench.py    --weights runs/yolo26n/weights/best.pt    # CPU latency, 1/2/4 threads -> results/
+python YOLO/test_boxes.py                                         # self-check: matching + tracker
+```
+
+## Pipeline and results
+
+```bash
+python pipeline.py               # frames -> classifier CSV -> YOLO boxes -> bbox_replay -> latency figure + summary
+python pipeline.py --clf runs/pipeline_board/board.csv --out runs/pipeline_board   # with the board (Board/README.md)
+python report.py                 # results/RESULTS.md + figures + the JSON/CSV behind it
+```
+
+`YOLO/run_boxes.py` writes the boxes in the `PBS/drift/data/boxes_fake.csv` layout. `bbox_replay` is compiled with
+OpenMP (Homebrew libomp) and is not modified. The board app and the PC receiver are in `../Board/`.
