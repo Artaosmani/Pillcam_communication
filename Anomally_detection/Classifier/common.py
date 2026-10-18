@@ -68,7 +68,7 @@ class Int8Model:
     """Runs model_int8.tflite one frame at a time, the way the board will."""
 
     def __init__(self, path, threads=1):
-        self.it = tf.lite.Interpreter(model_path=str(path), num_threads=threads,  # reference int8 kernels, no XNNPACK
+        self.it = tf.lite.Interpreter(model_path=str(path), num_threads=threads,  # built-in int8 kernels, no XNNPACK
                                       experimental_op_resolver_type=tf.lite.experimental.OpResolverType.BUILTIN_WITHOUT_DEFAULT_DELEGATES)
         self.it.allocate_tensors()
         self.inp, self.out = self.it.get_input_details()[0], self.it.get_output_details()[0]

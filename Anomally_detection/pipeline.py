@@ -83,7 +83,7 @@ def summary(out, board, yolo_model, threads):
     rep = list(csv.DictReader(open(out / "bbox_replay_out.csv")))
     det = [r for r in clf if int(r["detected"])]
     ms = lambda r, a, b: (int(r[b]) - int(r[a])) / 1e6
-    host = "host estimate (PC TFLite interpreter, 1 thread, reference kernels; NOT the nRF54LM20 board)"
+    host = "host estimate (PC TFLite interpreter, 1 thread, built-in kernels without XNNPACK; NOT the nRF54LM20 board)"
     usb = [int(r["usb_ns"]) / 1e6 for r in det if r.get("usb_ns")]
     s = {
         "1_frame_to_board": {**pct([int(r["usb_down_ns"]) / 1e6 for r in clf if r.get("usb_down_ns")]),
