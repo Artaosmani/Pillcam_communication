@@ -148,6 +148,7 @@ python YOLO/test_boxes.py                                         # self-check: 
 python pipeline.py               # frames -> classifier CSV -> YOLO boxes -> bbox_replay -> latency figure + summary
 python pipeline.py --clf runs/pipeline_board/board.csv --out runs/pipeline_board   # with the board (Board/README.md)
 python report.py                 # results/RESULTS.md + figures + the JSON/CSV behind it
+sh run_all.sh                    # all of the above for every trained model, in order (add "train" to retrain first)
 ```
 
 `YOLO/run_boxes.py` writes the boxes in the `PBS/drift/data/boxes_fake.csv` layout. `bbox_replay` is compiled with

@@ -6,7 +6,7 @@ Input = the real pipeline input: test polyp images squashed to 336×336 BGR fram
 not part of the YOLO stage). For each format (onnx_fp32, onnx_int8, openvino_fp16 = the FP32 IR, which OpenVINO runs in
 FP16 on ARM CPUs by default, openvino_int8 = the QDQ INT8 ONNX compiled by OpenVINO) and thread count: `warmup` untimed frames, then `runs` timed frames, one at a time (batch 1).
 Stages: pre (letterbox + normalise), infer, post (threshold/NMS + rescale), total. Reports p50/p95/mean in ms.
-Run on an otherwise idle machine. Writes <out>/yolo_bench.json and .csv (default out: results/).
+Run on an otherwise idle machine. Writes <out>/yolo_bench_<run>.json and .csv (default out: results/).
 """
 import argparse
 import csv
@@ -81,12 +81,13 @@ def main():
             rows += [{"format": name, "threads": t, "stage": k, **r[k]} for k in times]
             print(f"[bench] {name:14s} {t} thr: total p50 {r['total']['p50_ms']:.2f} p95 {r['total']['p95_ms']:.2f} ms "
                   f"(infer p50 {r['infer']['p50_ms']:.2f})")
-    (out / "yolo_bench.json").write_text(json.dumps(result, indent=2))
-    with open(out / "yolo_bench.csv", "w", newline="") as f:
+    name = f"yolo_bench_{w.parent.parent.name}"
+    (out / f"{name}.json").write_text(json.dumps(result, indent=2))
+    with open(out / f"{name}.csv", "w", newline="") as f:
         wr = csv.DictWriter(f, fieldnames=["format", "threads", "stage", "p50_ms", "p95_ms", "mean_ms"])
         wr.writeheader()
         wr.writerows(rows)
-    print(f"[bench] -> {out}/yolo_bench.json, yolo_bench.csv")
+    print(f"[bench] -> {out}/{name}.json, .csv")
 
 
 if __name__ == "__main__":

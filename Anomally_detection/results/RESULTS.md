@@ -57,7 +57,7 @@ Greedy one-to-one matching at IoU ≥ 0.5. Width/height errors in pixels of the 
 | yolo26n | int8 | 0.385 | 94/104 | 0.883 | 0.918 | 9.6 / 8.6 | -0.3 / +1.6 | 5/648 (0.8%) |
 | yolo26n | openvino_fp16 | 0.385 | 95/104 | 0.894 | 0.929 | 8.8 / 8.4 | +1.5 / +0.9 | 7/648 (1.1%) |
 
-### YOLO26n CPU latency on this PC (measured)
+### yolo26n: CPU latency on this PC (measured)
 
 Apple M3, macOS-26.5.1-arm64-arm-64bit; batch 1, 336x336 frames, 20 warm-up + 200 timed frames per row, one model at a time on an idle machine. p50 / p95 in ms.
 
@@ -75,6 +75,7 @@ Apple M3, macOS-26.5.1-arm64-arm-64bit; batch 1, 336x336 frames, 20 warm-up + 20
 | openvino_int8 | 1 | 0.47 / 0.74 | 72.04 / 73.64 | 0.14 / 0.21 | **72.63 / 74.34** |
 | openvino_int8 | 2 | 0.44 / 0.65 | 37.94 / 38.39 | 0.09 / 0.13 | **38.53 / 39.14** |
 | openvino_int8 | 4 | 0.48 / 0.64 | 20.35 / 22.11 | 0.07 / 0.11 | **20.91 / 22.76** |
+
 
 ## Latency per stage (pipeline run)
 
@@ -96,6 +97,16 @@ Detection p95 = **18.6 ms** vs the 100 ms target: **within** budget (host estima
 ![latency breakdown](latency_breakdown.png)
 
 In the figure, *detection* is the measured value from this run; *capture* and *network* are still the visualizer's fake values (hatched); *lookup* is the full PBS run per box until the lookup table exists.
+
+### End to end (classifier + YOLO26n on the replay frames)
+
+| | |
+|---|---|
+| Kvasir-SEG polyp frames flagged by the classifier | 99 / 100 |
+| Kvasir-SEG polyp frames ending with a correct box (IoU ≥ 0.5) | **91 / 100** |
+| All polyp frames ending with any box | 143 / 153 |
+| Polyp-free frames flagged by the classifier | 3 / 648 |
+| Polyp-free frames ending with a box (false injection) | **0 / 648** |
 
 ### Example frames
 
