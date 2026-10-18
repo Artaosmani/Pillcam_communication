@@ -45,6 +45,14 @@ Kvasir-Capsule polyp frames (all from one video) + normal-mucosa frames from tes
 | yolo26n | int8 | test_pos | 0.886 | 0.893 | 0.919 | 0.691 |
 | yolo26n | openvino_fp16 | test | 0.926 | 0.885 | 0.930 | 0.732 |
 | yolo26n | openvino_fp16 | test_pos | 0.930 | 0.891 | 0.944 | 0.743 |
+| yolo26n_p2 | pt | test | 0.916 | 0.933 | 0.943 | 0.705 |
+| yolo26n_p2 | pt | test_pos | 0.941 | 0.933 | 0.953 | 0.713 |
+| yolo26n_p2 | onnx | test | 0.933 | 0.942 | 0.943 | 0.691 |
+| yolo26n_p2 | onnx | test_pos | 0.960 | 0.942 | 0.956 | 0.701 |
+| yolo26n_p2 | int8 | test | 0.917 | 0.904 | 0.927 | 0.683 |
+| yolo26n_p2 | int8 | test_pos | 0.940 | 0.911 | 0.939 | 0.689 |
+| yolo26n_p2 | openvino_fp16 | test | 0.933 | 0.941 | 0.942 | 0.693 |
+| yolo26n_p2 | openvino_fp16 | test_pos | 0.961 | 0.942 | 0.955 | 0.703 |
 
 ### Box tightness (test_pos) and false alarms (test backgrounds)
 
@@ -56,6 +64,10 @@ Greedy one-to-one matching at IoU ≥ 0.5. Width/height errors in pixels of the 
 | yolo26n | onnx | 0.385 | 95/104 | 0.894 | 0.929 | 8.9 / 8.2 | +0.8 / +0.5 | 7/648 (1.1%) |
 | yolo26n | int8 | 0.385 | 94/104 | 0.883 | 0.918 | 9.6 / 8.6 | -0.3 / +1.6 | 5/648 (0.8%) |
 | yolo26n | openvino_fp16 | 0.385 | 95/104 | 0.894 | 0.929 | 8.8 / 8.4 | +1.5 / +0.9 | 7/648 (1.1%) |
+| yolo26n_p2 | pt | 0.251 | 99/104 | 0.873 | 0.914 | 11.4 / 11.4 | -4.1 / +0.5 | 11/648 (1.7%) |
+| yolo26n_p2 | onnx | 0.251 | 99/104 | 0.873 | 0.914 | 11.4 / 11.4 | -4.1 / +0.5 | 11/648 (1.7%) |
+| yolo26n_p2 | int8 | 0.251 | 98/104 | 0.871 | 0.911 | 11.1 / 11.4 | -2.2 / +1.2 | 6/648 (0.9%) |
+| yolo26n_p2 | openvino_fp16 | 0.251 | 99/104 | 0.873 | 0.917 | 11.3 / 11.3 | -4.1 / +0.4 | 11/648 (1.7%) |
 
 ### yolo26n: CPU latency on this PC (measured)
 
@@ -75,6 +87,25 @@ Apple M3, macOS-26.5.1-arm64-arm-64bit; batch 1, 336x336 frames, 20 warm-up + 20
 | openvino_int8 | 1 | 0.47 / 0.74 | 72.04 / 73.64 | 0.14 / 0.21 | **72.63 / 74.34** |
 | openvino_int8 | 2 | 0.44 / 0.65 | 37.94 / 38.39 | 0.09 / 0.13 | **38.53 / 39.14** |
 | openvino_int8 | 4 | 0.48 / 0.64 | 20.35 / 22.11 | 0.07 / 0.11 | **20.91 / 22.76** |
+
+### yolo26n_p2: CPU latency on this PC (measured)
+
+Apple M3, macOS-26.5.1-arm64-arm-64bit; batch 1, 336x336 frames, 20 warm-up + 200 timed frames per row, one model at a time on an idle machine. p50 / p95 in ms.
+
+| Format | Threads | Pre | Infer | Post | **Total** |
+|---|---|---|---|---|---|
+| onnx_fp32 | 1 | 0.50 / 0.62 | 50.57 / 51.65 | 0.12 / 0.19 | **51.17 / 52.31** |
+| onnx_fp32 | 2 | 0.53 / 0.63 | 27.92 / 28.30 | 0.11 / 0.14 | **28.60 / 28.98** |
+| onnx_fp32 | 4 | 0.81 / 0.99 | 21.28 / 21.63 | 0.15 / 0.17 | **22.09 / 22.66** |
+| onnx_int8 | 1 | 0.45 / 0.59 | 26.08 / 26.30 | 0.07 / 0.10 | **26.61 / 26.92** |
+| onnx_int8 | 2 | 0.47 / 0.59 | 16.71 / 16.94 | 0.07 / 0.09 | **17.24 / 17.57** |
+| onnx_int8 | 4 | 0.69 / 0.80 | 14.67 / 15.51 | 0.11 / 0.12 | **15.45 / 16.38** |
+| openvino_fp16 | 1 | 0.56 / 0.61 | 35.48 / 35.87 | 0.07 / 0.10 | **36.23 / 36.71** |
+| openvino_fp16 | 2 | 0.56 / 0.61 | 19.35 / 19.62 | 0.07 / 0.10 | **19.98 / 20.39** |
+| openvino_fp16 | 4 | 0.54 / 0.73 | 12.37 / 14.34 | 0.08 / 0.10 | **13.07 / 15.21** |
+| openvino_int8 | 1 | 0.50 / 0.73 | 102.91 / 103.83 | 0.12 / 0.19 | **103.67 / 104.63** |
+| openvino_int8 | 2 | 0.42 / 0.62 | 53.45 / 53.82 | 0.08 / 0.12 | **54.02 / 54.53** |
+| openvino_int8 | 4 | 0.49 / 0.65 | 28.32 / 32.55 | 0.08 / 0.13 | **28.97 / 33.18** |
 
 
 ## Latency per stage (pipeline run)
@@ -150,7 +181,11 @@ under 100 ms. That is an estimate until the board numbers exist.
    speed-up (Melwin), outside detection.
 7. **Placeholders kept on purpose.** Pixel → mm mapping in `box_to_geometry()`; *capture* and *network* in the
    latency figure are still the visualizer's fake values.
-8. **YOLO26n-P2** is training overnight; its results are added to this report when it finishes.
+8. **YOLO26n-P2** (extra stride-4 head) finds more polyps (mAP50 0.943 vs 0.930, 99 vs 95 of 104 matched) but its
+   boxes are looser (mAP50-95 0.69 vs 0.73, mean IoU 0.873 vs 0.894, ~11 vs ~9 px error, ~4 px too narrow), it raises
+   more false alarms (11 vs 7 of 648) and is ~30 % slower (15.2 vs 11.7 ms p95). Box tightness is the priority for
+   the simulator, so **YOLO26n stays the default**. Part of P2's recall gain comes from its lower deployment
+   confidence (0.25 vs 0.39). Kvasir-SEG has few small polyps, so the case P2 is designed for is barely tested here.
 9. **Small test sets.** 100 Kvasir-SEG test polyps for the boxes, 153 polyp frames for the classifier (53 of them are
    Kvasir v1 copies of Kvasir-SEG test images in the uncropped format), 55 capsule polyps from one video. Read
    differences of a point or two as noise.
