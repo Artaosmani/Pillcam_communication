@@ -4,14 +4,20 @@
 #   python YOLO/train.py --set lr0=0.005 epochs=50
 
 paths:
-  dataset: Data/kvasir-seg-split       # already split: {images,labels}/{train,val,test}; src.py writes data.yaml here
+  source: Data/kvasir-seg-split        # Kvasir-SEG, already split: {images,labels}/{train,val,test}
+  dataset: Data/yolo-split             # built by src.py: source + background images (symlinks) + data.yaml
   labels: labels/kavsir_bboxes.json    # original bounding boxes (used by visualize.py for ground truth)
   results: results                     # plots/images go to results/<run name>/, weights stay in runs/<run name>/weights
+
+negatives:
+  # no-polyp images from the shared split (same train/val/test as the classifier), added as background images
+  splits: Data/splits.json             # written by Classifier/data.py
+  ratio: 0.5                           # train/val: backgrounds = ratio × polyp images; test gets every negative
 
 model: Configs/yolo26n.yaml            # architecture to edit; the 'n' in the filename picks the scale (n/s/m/l/x)
 
 train:
-  epochs: 5
+  epochs: 150             # ~60 s/epoch on the M3 (MPS) with backgrounds; patience stops it earlier
   imgsz: 352               # must be a multiple of 32
   batch: 16                # -1 = auto batch (CUDA only)
   patience: 30             # early stopping, epochs without val improvement
