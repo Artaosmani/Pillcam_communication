@@ -152,7 +152,7 @@ def main():
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--frames", type=Path, default=ROOT / "Data/test/frames")
-    p.add_argument("--classifier", type=Path, default=ROOT / "runs/classifier_96/model_int8.tflite")
+    p.add_argument("--classifier", type=Path, default=ROOT / "runs/classifier_84/model_int8.tflite")
     p.add_argument("--clf", type=Path, help="use this classifier CSV (e.g. from the board) instead of running it here")
     p.add_argument("--yolo", type=Path, default=ROOT / "runs/yolo26n/weights/best_int8.onnx")
     p.add_argument("--threads", type=int, default=2)
