@@ -1,9 +1,11 @@
 """Collect the run outputs into results/: RESULTS.md, the JSON/CSV behind it, the latency figure and example frames.
 
 python report.py [--pipeline runs/pipeline] [--yolo runs/yolo26n runs/yolo26n_p2] [--classifier runs/classifier_96 ...]
+                 [--board runs/pipeline_board runs/pipeline_board_raw]
 
 Reads only files written by the other scripts (metrics_test.json, metrics_capsule.json, metrics_eval.json,
-results/yolo_bench.json, <pipeline>/latency_summary.json, boxes.csv) and copies them into results/.
+results/yolo_bench.json, <pipeline>/latency_summary.json, boxes.csv, <board run>/board.csv) and copies them into
+results/.
 """
 import argparse
 import csv
@@ -68,6 +70,87 @@ def classifier_section(runs):
                   "Kvasir-Capsule polyp frames (all from one video) + normal-mucosa frames from test videos. "
                   "Same threshold as above. Never used for training.", "",
                   "| Model | Input | Recall | Specificity | ROC-AUC | TN / FP / FN / TP |", "|---|---|---|---|---|---|", *capsule]
+    return lines
+
+
+BOARD_MODES = {"pipeline_board": "JPEG (FRM0): 336×336 JPEG, decoded on the board at 1/4 scale",
+               "pipeline_board_raw": "raw (RAW0): 84×84 RGB, area-resized on the PC, no decode on the board"}
+
+
+def auc(y, s):
+    """ROC-AUC as the Mann-Whitney U statistic (ties count half)."""
+    y, s = np.asarray(y), np.asarray(s, float)
+    order = s.argsort()
+    ranks = np.empty(len(s))
+    ranks[order] = np.arange(1, len(s) + 1)
+    for v in np.unique(s):  # average ranks of ties
+        ranks[s == v] = ranks[s == v].mean()
+    pos = y == 1
+    return (ranks[pos].sum() - pos.sum() * (pos.sum() + 1) / 2) / (pos.sum() * (~pos).sum())
+
+
+def board_section(runs, pc_csv):
+    """Classifier on the nRF54LM20 DK: test-set composition, metrics and per-frame times for each board run."""
+    runs = [r for r in runs if (r / "board.csv").exists()]
+    if not runs:
+        return []
+    labels = list(csv.DictReader(open(ROOT / "Data/test/labels.csv")))
+    y_of = {int(r["frame_id"]): int(r["polyp"]) for r in labels}
+    groups = {}
+    for r in labels:
+        k = (r["source"].rsplit("/", 1)[0], "polyp" if r["polyp"] == "1" else "no polyp")
+        groups[k] = groups.get(k, 0) + 1
+    n_pos = sum(y_of.values())
+    lines = ["## Classifier on the nRF54LM20 DK (measured on the board)", "",
+             "MobileNetV1 0.25 INT8, 84×84 input (`runs/classifier_84`), compiled with the Axon NN compiler and run on "
+             "the Axon NPU of the nRF54LM20B; threshold int8 ≥ 30. Frames are sent one at a time from the PC over USB "
+             "CDC-ACM (high speed); see `Board/README.md` for the protocol and how each time is measured.", "",
+             f"### Test set: {len(labels)} replay frames ({n_pos} polyp, {len(labels) - n_pos} no polyp)", "",
+             "The test split of `Data/splits.json` as 336×336 JPEG frames (`Data/test/frames`, labels in "
+             "`Data/test/labels.csv`). None of these images, or copies of them, are used for training.", "",
+             "| Source folder | Class | Frames |", "|---|---|---|"]
+    lines += [f"| `{src}` | {cls} | {n} |" for (src, cls), n in sorted(groups.items(), key=lambda kv: (kv[0][1], -kv[1]))]
+    lines += ["", "`kvasir-dataset/polyps` are the Kvasir v1 copies of the Kvasir-SEG test images (uncropped); "
+              "`negatives/kvasir-capsule` are Kvasir-Capsule normal-mucosa frames from the test videos.", ""]
+
+    pc = {int(r["frame_id"]): int(r["detected"]) for r in csv.DictReader(open(pc_csv))} if pc_csv.exists() else {}
+    metric_rows, time_rows, total_rows = [], [], []
+    for run in runs:
+        rows = list(csv.DictReader(open(run / "board.csv")))
+        mode = BOARD_MODES.get(run.name, run.name)
+        fid = [int(r["frame_id"]) for r in rows]
+        y = np.array([y_of[i] for i in fid])
+        det = np.array([int(r["detected"]) for r in rows])
+        tp, fp = int(((det == 1) & (y == 1)).sum()), int(((det == 1) & (y == 0)).sum())
+        fn, tn = int(((det == 0) & (y == 1)).sum()), int(((det == 0) & (y == 0)).sum())
+        rec, prec, spec = tp / (tp + fn), tp / max(tp + fp, 1), tn / (tn + fp)
+        agree = f"{sum(pc[i] == d for i, d in zip(fid, det))} / {len(fid)}" if pc else "–"
+        metric_rows.append(f"| {mode} | {len(rows)} | {f(prec)} | {f(rec)} | {f(2 * prec * rec / (prec + rec))} | "
+                           f"{f(spec)} | {f(auc(y, [int(r['raw']) for r in rows]))} | {tn} / {fp} / {fn} / {tp} | {agree} |")
+        ns = lambda k: np.array([int(r[k]) for r in rows], np.int64)
+        st = {"PC → board (USB, frame payload)": ns("usb_down_ns"),
+              "board preprocessing": ns("t_infer_start_ns") - ns("t_rx_board_ns"),
+              "**Axon inference**": ns("t_infer_end_ns") - ns("t_infer_start_ns"),
+              "board → PC (result line + frame if detected)": ns("usb_ns")}
+        st["**board compute (preprocessing + inference)**"] = st["board preprocessing"] + st["**Axon inference**"]
+        st["**round trip per frame (PC send → reply in)**"] = (ns("usb_down_ns") + ns("t_sent_ns") - ns("t_rx_board_ns")
+                                                              + ns("usb_ns"))
+        for name, v in st.items():
+            ms = v / 1e6
+            time_rows.append(f"| {mode.split(':')[0]} | {name} | {np.median(ms):.2f} | {np.percentile(ms, 95):.2f} | "
+                             f"{ms.mean():.2f} | {ms.min():.2f} | {ms.max():.2f} | {ms.sum() / 1000:.2f} s |")
+        tag = {"pipeline_board": "jpeg", "pipeline_board_raw": "raw"}.get(run.name, run.name)
+        shutil.copy(run / "board.csv", OUT / f"board_{tag}_frames.csv")
+    lines += ["### Metrics on the board", "",
+              "| Input sent to the board | Frames | Precision | Recall | F1 | Specificity | ROC-AUC (raw int8) | "
+              "TN / FP / FN / TP | Same decision as the PC INT8 model |", "|---|---|---|---|---|---|---|---|---|",
+              *metric_rows, "",
+              "### Time per frame and in total (board clock for the board stages, host clock for board → PC)", "",
+              "| Input | Stage | p50 ms | p95 ms | mean ms | min ms | max ms | total, all frames |",
+              "|---|---|---|---|---|---|---|---|", *time_rows, "",
+              "Per-frame values: `board_jpeg_frames.csv`, `board_raw_frames.csv` (columns described in "
+              "`Board/receiver.py`). In raw mode the PC's decode + resize to 84×84 is not included; on the pill that "
+              "work moves to the sender."]
     return lines
 
 
@@ -190,13 +273,16 @@ def main():
     p.add_argument("--pipeline", type=Path, default=ROOT / "runs/pipeline")
     p.add_argument("--yolo", type=Path, nargs="+", default=[ROOT / "runs/yolo26n", ROOT / "runs/yolo26n_p2"])
     p.add_argument("--classifier", type=Path, nargs="+", default=[ROOT / "runs/classifier_96", ROOT / "runs/classifier_84"])
+    p.add_argument("--board", type=Path, nargs="+", default=[ROOT / "runs/pipeline_board", ROOT / "runs/pipeline_board_raw"],
+                   help="board runs with board.csv from Board/receiver.py (skipped if missing)")
     p.add_argument("--open", type=Path, default=ROOT / "results/open_items.md", help="hand-written 'still open' list")
     a = p.parse_args()
     OUT.mkdir(exist_ok=True)
     doc = ["# Detection results", "",
            "All numbers on the held-out test split shared by both models (`Data/splits.json`); no test image, and no "
            "copy of one, is used for training. Generated by `report.py` from the JSON/CSV files in this folder.", ""]
-    doc += classifier_section(a.classifier) + [""] + yolo_section(a.yolo) + [""] + bench_section() + [""]
+    doc += classifier_section(a.classifier) + [""] + board_section(a.board, ROOT / "runs/pipeline/classifier.csv") + [""]
+    doc += yolo_section(a.yolo) + [""] + bench_section() + [""]
     doc += latency_section(a.pipeline) + [""] + examples(a.pipeline) + [""]
     if a.open.exists():
         doc += [a.open.read_text()]

@@ -25,3 +25,9 @@ Anomally_detection/Data/downloads/
 .DS_Store
 PBS/drift/bbox_replay
 !Anomally_detection/results/**/*.tflite
+
+# Axon compiler working output (the header that matters is copied to Board/src/generated/)
+Board/axon/intermediate/
+Board/axon/logs/
+Board/axon/outputs/
+build/

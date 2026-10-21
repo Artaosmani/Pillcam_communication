@@ -3,17 +3,21 @@
  * one result line out per frame, plus the frame bytes when a polyp is detected.
  *
  * Protocol (PC -> board), one frame at a time:
- *   "FRM0" | u32 frame_id (LE) | u32 jpeg_len (LE) | jpeg bytes            (336x336 baseline JPEG, ~40 KB)
+ *   "FRM0" | u32 frame_id (LE) | u32 jpeg_len (LE) | jpeg bytes            (336x336 baseline JPEG, ~20-40 KB)
+ *   "RAW0" | u32 frame_id (LE) | u32 len (LE)      | RGB888 pixels         (DEC_SIDE x DEC_SIDE, row-major HWC;
+ *                                                                           84x84 = 21168 B: no decode on the board)
  * Reply (board -> PC):
  *   "R,<frame_id>,<t_first_us>,<t_rx_us>,<t_infer_start_us>,<t_infer_end_us>,<t_sent_us>,<raw>,<score>,<detected>,<n>\n"
- *   followed by n bytes (the same JPEG) when detected=1, else n=0.
+ *   followed by n bytes (the same payload, JPEG or raw) when detected=1, else n=0.
  * Times are board uptime in microseconds (k_cycle_get_64): t_first = header received, t_rx = last frame byte
  * received, t_infer_start/end around the Axon call only, t_sent = just before the reply is written.
- * t_rx -> t_infer_start is the preprocessing (JPEG decode at reduced scale, resize, input LUT, HWC -> CHW).
+ * t_rx -> t_infer_start is the preprocessing (JPEG decode at reduced scale, resize, input LUT, HWC -> CHW; for
+ * RAW0 only the LUT and HWC -> CHW).
  *
  * Model files (see ../README.md): src/generated/nrf_axon_model_polyp_.h from the Axon compiler, and
  * src/model_int8.h from Classifier/train.py (only its constants and polyp_input_lut are used).
  */
+#include <assert.h>
 #include <string.h>
 #include <math.h>
 #include <zephyr/kernel.h>
@@ -24,6 +28,7 @@
 #include <zephyr/logging/log.h>
 #include <sample_usbd.h>
 
+#include <axon/nrf_axon_platform.h>
 #include "drivers/axon/nrf_axon_driver.h"
 #include "drivers/axon/nrf_axon_nn_infer.h"
 #include "generated/nrf_axon_model_polyp_.h"
@@ -32,7 +37,7 @@
 
 LOG_MODULE_REGISTER(polyp, LOG_LEVEL_INF);
 
-#define MODEL      nrf_axon_model_polyp  /* name set by MODEL_NAME in axon/polyp_compile.yaml */
+#define MODEL      model_polyp  /* model_<model_name> from axon/polyp_compile.yaml */
 #define FRAME_SIDE 336
 #define MAX_JPEG   (64 * 1024)
 #define S          POLYP_INPUT_SIZE
@@ -61,11 +66,18 @@ static void uart_cb(const struct device *dev, void *user)
 
 	while (uart_irq_update(dev) && uart_irq_is_pending(dev)) {
 		if (uart_irq_rx_ready(dev)) {
-			int n = uart_fifo_read(dev, buf, sizeof(buf));
+			uint32_t room = MIN(ring_buf_space_get(&rx_ring), sizeof(buf));
 
-			if (n > 0) {
-				ring_buf_put(&rx_ring, buf, n); /* ring holds 16 KB; reader drains it continuously */
-				k_sem_give(&rx_sem);
+			if (!room) {
+				/* ring full: leave the bytes in the CDC FIFO (USB NAKs the host) until read_exact drains it */
+				uart_irq_rx_disable(dev);
+			} else {
+				int n = uart_fifo_read(dev, buf, room);
+
+				if (n > 0) {
+					ring_buf_put(&rx_ring, buf, n);
+					k_sem_give(&rx_sem);
+				}
 			}
 		}
 		if (uart_irq_tx_ready(dev)) {
@@ -75,7 +87,9 @@ static void uart_cb(const struct device *dev, void *user)
 			if (!n) {
 				uart_irq_tx_disable(dev);
 			} else {
-				ring_buf_get_finish(&tx_ring, MAX(uart_fifo_fill(dev, p, n), 0));
+				int sent = uart_fifo_fill(dev, p, n); /* not inside MAX(): the macro would call it twice */
+
+				ring_buf_get_finish(&tx_ring, MAX(sent, 0));
 			}
 			k_sem_give(&tx_sem);
 		}
@@ -91,6 +105,7 @@ static void read_exact(uint8_t *dst, size_t len)
 			k_sem_take(&rx_sem, K_FOREVER);
 			continue;
 		}
+		uart_irq_rx_enable(cdc); /* room again: resume if the callback paused RX */
 		dst += n;
 		len -= n;
 	}
@@ -222,21 +237,24 @@ int main(void)
 		uint8_t hdr[12];
 
 		read_exact(hdr, 4);
-		if (memcmp(hdr, "FRM0", 4)) {
-			continue; /* resync byte by byte */
+		bool is_raw = !memcmp(hdr, "RAW0", 4);
+
+		if (!is_raw && memcmp(hdr, "FRM0", 4)) {
+			continue; /* resync */
 		}
 		read_exact(hdr + 4, 8);
 		uint64_t t_first = now_us();
 		uint32_t fid = sys_get_le32(hdr + 4), len = sys_get_le32(hdr + 8);
+		uint8_t *payload = is_raw ? decoded : jpeg;
 
-		if (len > MAX_JPEG) {
-			LOG_ERR("frame %u too large (%u)", fid, len);
+		if (is_raw ? len != sizeof(decoded) : len > MAX_JPEG) {
+			LOG_ERR("frame %u: bad length %u", fid, len);
 			continue;
 		}
-		read_exact(jpeg, len);
+		read_exact(payload, len);
 		uint64_t t_rx = now_us();
 
-		int err = preprocess(len);
+		int err = is_raw ? (to_input(), 0) : preprocess(len);
 		uint64_t t0 = now_us();
 		int infer = err ? err : nrf_axon_nn_model_infer_sync(&MODEL, input_chw, output);
 		uint64_t t1 = now_us();
@@ -254,7 +272,7 @@ int main(void)
 
 		write_all(line, n);
 		if (det) {
-			write_all(jpeg, len);
+			write_all(payload, len);
 		}
 	}
 	return 0;

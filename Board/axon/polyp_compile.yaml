@@ -1,10 +1,7 @@
-# Axon NPU TFLite compiler input (Edge AI add-on). Run from the add-on's tools/axon/compiler directory:
-#   python scripts/axons_ml_nn_compiler_executor.py <path>/Board/axon/polyp_compile.yaml
-# Paths are relative to where you run it, or absolute. See the add-on docs for every key.
-MODEL_NAME: polyp                                   # -> nrf_axon_model_polyp_.h, symbol nrf_axon_model_polyp
-TFLITE_MODEL: <path>/Anomally_detection/runs/classifier_84/model_int8.tflite
-# Optional, to get the compiler's accuracy / quantisation-loss report and test vectors:
-# FLOAT_MODEL: ...
-# TEST_DATA: ...
-# TEST_LABELS: ...
-# HEADER_FILE_TEST_VECTOR_CNT: 0
+# Axon NPU TFLite compiler input (Edge AI add-on). Run from the add-on's tools/axon/compiler/scripts directory:
+#   python axons_ml_nn_compiler_executor.py <repo>/Board/axon/polyp_compile.yaml
+# Paths are relative to where you run it, or absolute. Every key: scripts/compiler_input_yaml_template.yaml.
+polyp:
+  model_name: polyp                                  # -> nrf_axon_model_polyp_.h, symbol nrf_axon_model_polyp
+  tflite_model: <repo>/Anomally_detection/runs/classifier_84/model_int8.tflite
+  classification_labels:                             # keys the executor expects to exist, even if empty

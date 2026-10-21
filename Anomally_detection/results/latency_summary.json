@@ -1,73 +1,73 @@
 {
   "1_frame_to_board": {
-    "p50_ms": null,
-    "p95_ms": null,
-    "n": 0,
-    "label": "placeholder",
-    "how": "not measured: needs the board (lab) or the pill radio link (real system)"
+    "p50_ms": 68.577,
+    "p95_ms": 70.914,
+    "n": 801,
+    "label": "measured",
+    "how": "USB CDC-ACM host->board, from Board/receiver.py"
   },
   "2a_board_preprocess": {
-    "p50_ms": 1.88,
-    "p95_ms": 2.114,
+    "p50_ms": 16.993,
+    "p95_ms": 17.079,
     "n": 801,
-    "label": "host estimate",
-    "how": "PC: JPEG decode + area resize + normalise"
+    "label": "measured",
+    "how": "board timer"
   },
   "2b_board_inference": {
-    "p50_ms": 0.245,
-    "p95_ms": 0.266,
+    "p50_ms": 14.665,
+    "p95_ms": 14.674,
     "n": 801,
-    "label": "host estimate",
-    "how": "host estimate (PC TFLite interpreter, 1 thread, built-in kernels without XNNPACK; NOT the nRF54LM20 board)"
+    "label": "measured",
+    "how": "board cycle counter"
   },
   "3_board_to_pc": {
-    "p50_ms": null,
-    "p95_ms": null,
-    "n": 0,
-    "label": "placeholder",
-    "how": "not measured on the PC-only run (0 in the timeline)"
+    "p50_ms": 27.461,
+    "p95_ms": 28.0888,
+    "n": 149,
+    "label": "measured",
+    "how": "USB CDC-ACM board->host incl. frame bytes, Board/receiver.py"
   },
   "4_yolo_pc_cpu": {
-    "p50_ms": 9.6475,
-    "p95_ms": 16.02384999999999,
-    "n": 150,
+    "p50_ms": 16.67,
+    "p95_ms": 30.236,
+    "n": 149,
     "label": "measured",
     "how": "best_openvino_model (OpenVINO, FP16 compute on ARM), PC CPU, 4 threads, pre+infer+post"
   },
   "4a_yolo_pre": {
-    "p50_ms": 0.638,
-    "p95_ms": 0.8824999999999995,
-    "n": 150
+    "p50_ms": 0.932,
+    "p95_ms": 1.365,
+    "n": 149
   },
   "4b_yolo_infer": {
-    "p50_ms": 8.8895,
-    "p95_ms": 14.917999999999997,
-    "n": 150
+    "p50_ms": 15.471,
+    "p95_ms": 28.5868,
+    "n": 149
   },
   "4c_yolo_post": {
-    "p50_ms": 0.07,
-    "p95_ms": 0.18724999999999975,
-    "n": 150
+    "p50_ms": 0.133,
+    "p95_ms": 0.34899999999999987,
+    "n": 149
   },
   "5_simulation_per_box": {
-    "p50_ms": 783.518,
-    "p95_ms": 821.4566,
+    "p50_ms": 789.512,
+    "p95_ms": 831.9296,
     "n": 149,
     "label": "measured",
     "how": "bbox_replay process_box() wall time (full PBS run per box until the lookup table exists)"
   },
   "detection_total": {
-    "p50_ms": 11.835375,
-    "p95_ms": 18.566204700000004,
+    "p50_ms": 75.683458,
+    "p95_ms": 89.36602500000001,
     "n": 143,
     "budget_p95_ms": 100.0,
     "within_budget": true,
-    "label": "host estimate",
+    "label": "measured",
     "how": "t_detect - t_capture per frame with boxes = stage 2 + 3 + 4 (stage 1 not included)"
   },
   "counts": {
     "frames": 801,
-    "detected": 150,
+    "detected": 149,
     "frames_with_boxes": 143,
     "boxes": 149
   },
@@ -78,7 +78,7 @@
     "polyp_frames": 153,
     "polyp_frames_with_box": 143,
     "negative_frames": 648,
-    "negative_frames_flagged": 3,
+    "negative_frames_flagged": 2,
     "negative_frames_with_box": 0
   }
 }
