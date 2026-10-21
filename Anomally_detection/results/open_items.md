@@ -8,17 +8,18 @@ own transfer PC → board (stage 1) is measured too but not part of the total. T
 | Input sent to the board | Board compute p50 (preprocessing + Axon) | Detection total p50 / p95 | Within 100 ms? |
 |---|---|---|---|
 | 336×336 JPEG, decoded on the board | 207.7 ms (193 + 14.9) | 258 / 283 ms | no |
-| 84×84 raw RGB, resized on the PC | 31.7 ms (17.0 + 14.7) | **75.7 / 89.4 ms** | **yes** |
+| 84×84 raw RGB, resized on the PC | 15.8 ms (1.1 + 14.7) | **60.6 / 76.4 ms** | **yes** |
 
 ## Still open
 
 1. **PC → board transfer is slow: ≈ 1.6 ms per 512-byte USB packet** (≈ 68 ms per 20 KB frame at 480 Mbit/s).
-   Not in the detection total, but it limits the frame rate. Logging and the PC write pattern are ruled out; see
-   "Known issue" in `Board/README.md` for what is checked and the next step.
-2. **Raw-mode preprocessing (17 ms) can drop to ≈ 1 ms.** At 84×84 `to_input()` still runs its general float
-   area-resize loop although nothing is resized; a direct LUT copy into CHW is enough. Not done yet, so the numbers
-   above match the firmware in the repo.
-3. **What the pill sends.** Raw 84×84 removes the board's JPEG decode (193 ms → 17 ms) but moves the decode + resize
+   Not in the detection total, but it limits the frame rate. The board CPU is **100 % busy** for the whole receive and
+   the data reaches `uart_cb` in ≈ 64-byte pieces (≈ 330 reads per frame, ≈ 0.2 ms CPU each); RX back-pressure never
+   triggers, and the PC write pattern and USB driver logging are ruled out. Next: per-thread CPU time over the
+   receive window (`Board/README.md`, "Known issue").
+2. **YOLO26n timing varies between runs on the same PC** (p50 12.1 ms in the JPEG board run, 17.5 ms in the last raw
+   run, same model and threads), most likely other load on the M3. Close other programs for timing runs.
+3. **What the pill sends.** Raw 84×84 removes the board's JPEG decode (193 ms → 1.1 ms) but moves the decode + resize
    to the sender (≈ 10 ms on the M3 PC here) and needs the full frame for YOLO26n from somewhere else. In the lab
    pipeline YOLO26n reads the full frame from disk.
 4. **Stage 1 (frame → board)** in the real system is the pill's radio link; here it is USB from the PC.
