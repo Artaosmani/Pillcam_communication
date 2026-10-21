@@ -34,10 +34,12 @@ PC → board, one frame at a time, all integers little-endian:
 the resize used in training). Board → PC, one line per frame:
 
 ```
-R,<frame_id>,<t_first_us>,<t_rx_us>,<t_infer_start_us>,<t_infer_end_us>,<t_sent_us>,<raw_int8>,<score>,<detected>,<n>\n
+R,<frame_id>,<t_first_us>,<t_rx_us>,<t_infer_start_us>,<t_infer_end_us>,<t_sent_us>,<raw_int8>,<score>,<detected>,<n>,
+  <rx_reads>,<rx_gap_max_us>,<rx_pauses>,<rx_busy_pct>\n
 ```
 
-followed by `n` bytes (the same payload) when `detected=1`.
+followed by `n` bytes (the same payload) when `detected=1`. The last four fields are receive diagnostics for the
+frame (see "Known issue"); `receiver.py` ignores them.
 
 ## How each time is measured
 
@@ -116,12 +118,24 @@ terminal / VS Code extension does this for you).
 
 The payload arrives at **≈ 1.6 ms per 512-byte USB packet** (≈ 67 ms for a 20 KB JPEG, ≈ 68 ms for a raw frame),
 far below the 480 Mbit/s link rate; time is exactly proportional to size. The host's `write()` blocks for the same
-time, so the board is accepting packets slowly. Ruled out by measurement: the PC write pattern (whole frame vs
-512 B chunks) and the UDC driver's INF logging (`CONFIG_UDC_DRIVER_LOG_LEVEL_WRN` changed nothing). Not checked
-yet: whether the RX back-pressure in `uart_cb` (pausing RX when the 16 KB ring is full) ever triggers. The CDC-ACM
-class keeps only one 512-byte OUT transfer queued and re-arms it from the system work queue after each packet;
-where the 1.6 ms per packet goes is not found yet. Next step: timestamp the RX reads in `uart_cb` on the board.
-Board → PC is not affected (30 KB in ≈ 30 ms including scheduling).
+time, so the board is accepting packets slowly. The reply line carries RX diagnostics for each frame
+(`rx_reads`, `rx_gap_max_us`, `rx_pauses`, `rx_busy_pct`). On 40 frames per mode they show:
+
+| | JPEG | raw |
+|---|---|---|
+| receive time (median) | 68.2 ms | 69.8 ms |
+| `uart_fifo_read` calls with data per frame | 322 | 330 |
+| bytes per read | ≈ 64 | ≈ 64 |
+| longest gap between reads | 0.39 ms | 0.39 ms |
+| RX pauses (ring full) | 0 | 0 |
+| **CPU busy while receiving** | **100 %** | **100 %** |
+
+So the board CPU is saturated for the whole transfer, ≈ 0.2 ms per 64-byte read: the host and the wire are not the
+limit, and the back-pressure in `uart_cb` never triggers. Also ruled out: the PC write pattern (whole frame vs
+512 B chunks) and the UDC driver's INF logging (`CONFIG_UDC_DRIVER_LOG_LEVEL_WRN` changed nothing). The HS
+descriptors declare 512-byte bulk packets, so why the data arrives in 64-byte pieces is open. Next step: per-thread
+CPU time (main, system work queue, DWC2 driver thread, USBD thread) over the receive window to see which one burns
+it. Board → PC is not affected (30 KB in ≈ 30 ms including scheduling).
 
 ## Memory
 

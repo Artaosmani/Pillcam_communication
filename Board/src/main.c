@@ -7,7 +7,8 @@
  *   "RAW0" | u32 frame_id (LE) | u32 len (LE)      | RGB888 pixels         (DEC_SIDE x DEC_SIDE, row-major HWC;
  *                                                                           84x84 = 21168 B: no decode on the board)
  * Reply (board -> PC):
- *   "R,<frame_id>,<t_first_us>,<t_rx_us>,<t_infer_start_us>,<t_infer_end_us>,<t_sent_us>,<raw>,<score>,<detected>,<n>\n"
+ *   "R,<frame_id>,<t_first_us>,<t_rx_us>,<t_infer_start_us>,<t_infer_end_us>,<t_sent_us>,<raw>,<score>,<detected>,<n>,
+ *    <rx_reads>,<rx_gap_max_us>,<rx_pauses>,<rx_busy_pct>\n"
  *   followed by n bytes (the same payload, JPEG or raw) when detected=1, else n=0.
  * Times are board uptime in microseconds (k_cycle_get_64): t_first = header received, t_rx = last frame byte
  * received, t_infer_start/end around the Axon call only, t_sent = just before the reply is written.
@@ -60,6 +61,19 @@ static int8_t output[16];
 
 /* ------------------------------------------------------------------ USB CDC-ACM */
 
+static inline uint64_t now_us(void)
+{
+	return k_cyc_to_us_floor64(k_cycle_get_64());
+}
+
+/* RX diagnostics for the frame being received: reset by main() after the header, reported in the reply */
+static struct {
+	uint32_t reads;      /* uart_fifo_read() calls that returned data */
+	uint32_t pauses;     /* times RX was paused because rx_ring was full */
+	uint32_t gap_max_us; /* longest time between two of those reads */
+	uint64_t last_us;
+} rxd;
+
 static void uart_cb(const struct device *dev, void *user)
 {
 	uint8_t buf[512];
@@ -71,10 +85,18 @@ static void uart_cb(const struct device *dev, void *user)
 			if (!room) {
 				/* ring full: leave the bytes in the CDC FIFO (USB NAKs the host) until read_exact drains it */
 				uart_irq_rx_disable(dev);
+				rxd.pauses++;
 			} else {
 				int n = uart_fifo_read(dev, buf, room);
 
 				if (n > 0) {
+					uint64_t t = now_us();
+
+					if (rxd.last_us) {
+						rxd.gap_max_us = MAX(rxd.gap_max_us, (uint32_t)(t - rxd.last_us));
+					}
+					rxd.last_us = t;
+					rxd.reads++;
 					ring_buf_put(&rx_ring, buf, n);
 					k_sem_give(&rx_sem);
 				}
@@ -129,11 +151,6 @@ static void write_all(const uint8_t *src, size_t len)
 	}
 }
 
-static inline uint64_t now_us(void)
-{
-	return k_cyc_to_us_floor64(k_cycle_get_64());
-}
-
 /* ------------------------------------------------------------------ JPEG -> model input */
 
 struct src { const uint8_t *p; size_t left; };
@@ -166,6 +183,14 @@ static int jd_out(JDEC *jd, void *bitmap, JRECT *r)
  * At S = 84 DEC_SIDE is 84 too and this is a copy + LUT. */
 static void to_input(void)
 {
+	if (DEC_SIDE == S) { /* 84: nothing to resize, LUT + HWC -> CHW only (same result as the loop below at k = 1) */
+		for (int i = 0; i < S * S; i++) {
+			for (int c = 0; c < 3; c++) {
+				input_chw[c * S * S + i] = polyp_input_lut[decoded[i * 3 + c]];
+			}
+		}
+		return;
+	}
 	const float k = (float)DEC_SIDE / S;
 
 	for (int oy = 0; oy < S; oy++) {
@@ -244,6 +269,10 @@ int main(void)
 		}
 		read_exact(hdr + 4, 8);
 		uint64_t t_first = now_us();
+		k_thread_runtime_stats_t cpu0, cpu1;
+
+		memset(&rxd, 0, sizeof(rxd));
+		k_thread_runtime_stats_all_get(&cpu0);
 		uint32_t fid = sys_get_le32(hdr + 4), len = sys_get_le32(hdr + 8);
 		uint8_t *payload = is_raw ? decoded : jpeg;
 
@@ -253,6 +282,11 @@ int main(void)
 		}
 		read_exact(payload, len);
 		uint64_t t_rx = now_us();
+
+		k_thread_runtime_stats_all_get(&cpu1);
+		/* CPU busy share while the payload came in (ISRs count towards the thread they interrupt) */
+		uint32_t busy_pct = (uint32_t)(100 * (cpu1.total_cycles - cpu0.total_cycles) /
+					       MAX(cpu1.execution_cycles - cpu0.execution_cycles, 1));
 
 		int err = is_raw ? (to_input(), 0) : preprocess(len);
 		uint64_t t0 = now_us();
@@ -267,8 +301,9 @@ int main(void)
 			LOG_ERR("frame %u: preprocess/inference error %d", fid, infer);
 		}
 		uint64_t t_sent = now_us();
-		int n = snprintk(line, sizeof(line), "R,%u,%llu,%llu,%llu,%llu,%llu,%d,%.4f,%d,%u\n", fid, t_first, t_rx,
-				 t0, t1, t_sent, raw, (double)score, det, det ? len : 0);
+		int n = snprintk(line, sizeof(line), "R,%u,%llu,%llu,%llu,%llu,%llu,%d,%.4f,%d,%u,%u,%u,%u,%u\n", fid,
+				 t_first, t_rx, t0, t1, t_sent, raw, (double)score, det, det ? len : 0, rxd.reads,
+				 rxd.gap_max_us, rxd.pauses, busy_pct);
 
 		write_all(line, n);
 		if (det) {
