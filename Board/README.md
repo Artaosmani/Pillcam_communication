@@ -130,6 +130,10 @@ time, so the board is accepting packets slowly. The reply line carries RX diagno
 | RX pauses (ring full) | 0 | 0 |
 | **CPU busy while receiving** | **100 %** | **100 %** |
 
+**Caveat:** the link speed was not checked during these 40-frame runs, and the board was found at 12 Mbit/s
+(full speed, where 64 bytes is the packet size) right after. Repeat at a confirmed 480 Mbit/s before drawing
+conclusions; `receiver.py` prints the link speed at start and warns when it isn't high speed.
+
 So the board CPU is saturated for the whole transfer, ≈ 0.2 ms per 64-byte read: the host and the wire are not the
 limit, and the back-pressure in `uart_cb` never triggers. Also ruled out: the PC write pattern (whole frame vs
 512 B chunks) and the UDC driver's INF logging (`CONFIG_UDC_DRIVER_LOG_LEVEL_WRN` changed nothing). The HS

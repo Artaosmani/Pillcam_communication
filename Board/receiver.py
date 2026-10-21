@@ -22,6 +22,8 @@ import argparse
 import csv
 import re
 import struct
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -56,6 +58,16 @@ def payload(path, raw):
     return b"RAW0", np.round(img.reshape(RAW_SIDE, k, RAW_SIDE, k, 3).mean((1, 3))).astype(np.uint8).tobytes()
 
 
+def link_speed():
+    """The board's USB link speed as macOS reports it (e.g. "480 Mb/s"), or None (other OS, or board not found).
+    The firmware is built for high speed, but the link can still come up at full speed (12 Mb/s, 64-byte packets)."""
+    if sys.platform != "darwin":
+        return None
+    out = subprocess.run(["system_profiler", "SPUSBHostDataType"], capture_output=True, text=True).stdout
+    m = re.search(r"Manufacturer: Zephyr Project(?:\n(?!\s*\n).*)*?\n\s*Link Speed: (.+)", out)
+    return m.group(1).strip() if m else None
+
+
 def read_reply(port):
     line = port.readline().decode(errors="replace").strip()
     while line and not line.startswith("R,"):  # skip anything that is not a result line
@@ -69,6 +81,11 @@ def read_reply(port):
 
 def main():
     a = parse_args()
+    if a.port.startswith("/dev/"):
+        speed = link_speed()
+        print(f"[board] USB link speed: {speed or 'unknown'}")
+        if speed and not speed.startswith("480"):
+            print("[board] WARNING: not high speed; replug (directly into the PC, not through a hub) for HS numbers")
     port = serial.serial_for_url(a.port, timeout=a.timeout)  # baud rate is ignored by CDC-ACM
     port.reset_input_buffer()
     a.out.parent.mkdir(parents=True, exist_ok=True)

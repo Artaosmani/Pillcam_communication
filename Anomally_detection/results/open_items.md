@@ -17,6 +17,9 @@ own transfer PC → board (stage 1) is measured too but not part of the total. T
    the data reaches `uart_cb` in ≈ 64-byte pieces (≈ 330 reads per frame, ≈ 0.2 ms CPU each); RX back-pressure never
    triggers, and the PC write pattern and USB driver logging are ruled out. Next: per-thread CPU time over the
    receive window (`Board/README.md`, "Known issue").
+   **Link speed caveat:** the JPEG run was at 480 Mbit/s (checked); the RX diagnostics and the last raw run were not
+   checked, and the board was found at 12 Mbit/s (full speed, 64-byte packets) afterwards. The 64-byte reads may be
+   that full-speed link. Rerun the diagnostics at a confirmed 480 Mbit/s; `receiver.py` now prints the link speed.
 2. **YOLO26n timing varies between runs on the same PC** (p50 12.1 ms in the JPEG board run, 17.5 ms in the last raw
    run, same model and threads), most likely other load on the M3. Close other programs for timing runs.
 3. **What the pill sends.** Raw 84×84 removes the board's JPEG decode (193 ms → 1.1 ms) but moves the decode + resize
