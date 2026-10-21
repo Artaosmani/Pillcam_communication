@@ -3,6 +3,10 @@
 python Board/receiver.py --port /dev/tty.usbmodemXXXX --frames Anomally_detection/Data/test/frames \
     --out Anomally_detection/runs/pipeline_board/board.csv
 python Anomally_detection/pipeline.py --clf Anomally_detection/runs/pipeline_board/board.csv --out runs/pipeline_board
+python Board/receiver.py ... --raw     # send 84x84 RGB instead of the JPEG: the board skips the decode
+
+With --raw the PC decodes each 336x336 frame and area-resizes it to 84x84 (exact 4x4 block mean, the resize used in
+training) and sends "RAW0" + frame_id + length + 21168 RGB bytes; the board echoes those bytes on a detection.
 
 Per frame: send "FRM0" + frame_id + length + JPEG, wait for the reply line, read the echoed JPEG when detected=1 and
 check it is byte-identical. Writes the classifier CSV the pipeline reads, in the host clock:
@@ -23,6 +27,8 @@ from pathlib import Path
 
 import serial
 
+RAW_SIDE = 84  # board DEC_SIDE at POLYP_INPUT_SIZE 84
+
 COLUMNS = ["frame_id", "t_rx_board_ns", "t_infer_start_ns", "t_infer_end_ns", "t_sent_ns", "score", "detected",
            "raw", "usb_down_ns", "usb_ns"]
 
@@ -33,6 +39,21 @@ def frames(folder):
     if not out:
         raise SystemExit(f"No frames in {folder}")
     return out
+
+
+def payload(path, raw):
+    """(magic, bytes) to send for one frame."""
+    data = path.read_bytes()
+    if not raw:
+        return b"FRM0", data
+    import io
+    import numpy as np
+    from PIL import Image
+    img = np.asarray(Image.open(io.BytesIO(data)).convert("RGB"), np.float32)
+    k = img.shape[0] // RAW_SIDE
+    if img.shape[:2] != (RAW_SIDE * k, RAW_SIDE * k):
+        raise SystemExit(f"{path}: {img.shape[:2]} is not a multiple of {RAW_SIDE}")
+    return b"RAW0", np.round(img.reshape(RAW_SIDE, k, RAW_SIDE, k, 3).mean((1, 3))).astype(np.uint8).tobytes()
 
 
 def read_reply(port):
@@ -52,13 +73,16 @@ def main():
     port.reset_input_buffer()
     a.out.parent.mkdir(parents=True, exist_ok=True)
     n = hits = bad = 0
+    prep = []
     with open(a.out, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(COLUMNS)
         for fid, path in frames(a.frames):
-            data = path.read_bytes()
+            t_prep = time.perf_counter_ns()
+            magic, data = payload(path, a.raw)
+            prep.append((time.perf_counter_ns() - t_prep) / 1e6)
             t_start = time.time_ns()
-            port.write(b"FRM0" + struct.pack("<II", fid, len(data)) + data)
+            port.write(magic + struct.pack("<II", fid, len(data)) + data)
             r = read_reply(port)
             echo = port.read(r["n"]) if r["n"] else b""
             t_end = time.time_ns()
@@ -75,6 +99,8 @@ def main():
                         usb_down, usb_up])
             n, hits = n + 1, hits + r["det"]
     print(f"[board] {n} frames, {hits} detected, {bad} echoed frames corrupted -> {a.out}")
+    if a.raw:
+        print(f"[board] PC decode + 84x84 resize (not in the CSV): median {sorted(prep)[len(prep) // 2]:.2f} ms")
 
 
 def parse_args():
@@ -83,6 +109,7 @@ def parse_args():
     p.add_argument("--frames", type=Path, required=True)
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--timeout", type=float, default=2.0, help="seconds to wait for a reply")
+    p.add_argument("--raw", action="store_true", help="send 84x84 RGB (RAW0) instead of the JPEG (FRM0)")
     return p.parse_args()
 
 

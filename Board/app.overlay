@@ -4,3 +4,9 @@
 		compatible = "zephyr,cdc-acm-uart";
 	};
 };
+
+
+/* Axon NPU exists only on nRF54LM20B (disabled in the SoC dtsi). */
+&axon {
+	status = "okay";
+};

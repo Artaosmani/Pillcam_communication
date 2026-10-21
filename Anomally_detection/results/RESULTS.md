@@ -31,6 +31,54 @@ Kvasir-Capsule polyp frames (all from one video) + normal-mucosa frames from tes
 | Float | 84×84 | 0.000 | 1.000 | 0.801 | 257 / 0 / 55 / 0 |
 | INT8 | 84×84 | 0.000 | 1.000 | 0.813 | 257 / 0 / 55 / 0 |
 
+## Classifier on the nRF54LM20 DK (measured on the board)
+
+MobileNetV1 0.25 INT8, 84×84 input (`runs/classifier_84`), compiled with the Axon NN compiler and run on the Axon NPU of the nRF54LM20B; threshold int8 ≥ 30. Frames are sent one at a time from the PC over USB CDC-ACM (high speed); see `Board/README.md` for the protocol and how each time is measured.
+
+### Test set: 801 replay frames (153 polyp, 648 no polyp)
+
+The test split of `Data/splits.json` as 336×336 JPEG frames (`Data/test/frames`, labels in `Data/test/labels.csv`). None of these images, or copies of them, are used for training.
+
+| Source folder | Class | Frames |
+|---|---|---|
+| `Data/negatives/kvasir-capsule` | no polyp | 257 |
+| `Data/negatives/hyperkvasir/cecum` | no polyp | 114 |
+| `Data/negatives/hyperkvasir/bbps-2-3` | no polyp | 113 |
+| `Data/kvasir/kvasir-dataset/dyed-resection-margins` | no polyp | 58 |
+| `Data/negatives/hyperkvasir/bbps-0-1` | no polyp | 53 |
+| `Data/kvasir/kvasir-dataset/ulcerative-colitis` | no polyp | 52 |
+| `Data/negatives/hyperkvasir/ileum` | no polyp | 1 |
+| `Data/kvasir-seg-split/images/test` | polyp | 100 |
+| `Data/kvasir/kvasir-dataset/polyps` | polyp | 53 |
+
+`kvasir-dataset/polyps` are the Kvasir v1 copies of the Kvasir-SEG test images (uncropped); `negatives/kvasir-capsule` are Kvasir-Capsule normal-mucosa frames from the test videos.
+
+### Metrics on the board
+
+| Input sent to the board | Frames | Precision | Recall | F1 | Specificity | ROC-AUC (raw int8) | TN / FP / FN / TP | Same decision as the PC INT8 model |
+|---|---|---|---|---|---|---|---|---|
+| JPEG (FRM0): 336×336 JPEG, decoded on the board at 1/4 scale | 801 | 0.980 | 0.954 | 0.967 | 0.995 | 0.999 | 645 / 3 / 7 / 146 | 800 / 801 |
+| raw (RAW0): 84×84 RGB, area-resized on the PC, no decode on the board | 801 | 0.987 | 0.961 | 0.974 | 0.997 | 0.998 | 646 / 2 / 6 / 147 | 800 / 801 |
+
+### Time per frame and in total (board clock for the board stages, host clock for board → PC)
+
+| Input | Stage | p50 ms | p95 ms | mean ms | min ms | max ms | total, all frames |
+|---|---|---|---|---|---|---|---|
+| JPEG (FRM0) | PC → board (USB, frame payload) | 67.45 | 99.89 | 70.57 | 37.16 | 134.47 | 56.53 s |
+| JPEG (FRM0) | board preprocessing | 192.88 | 214.96 | 193.96 | 167.89 | 237.01 | 155.36 s |
+| JPEG (FRM0) | **Axon inference** | 14.85 | 14.86 | 14.85 | 14.84 | 14.87 | 11.89 s |
+| JPEG (FRM0) | board → PC (result line + frame if detected) | 1.51 | 33.26 | 7.00 | 0.85 | 48.02 | 5.61 s |
+| JPEG (FRM0) | **board compute (preprocessing + inference)** | 207.74 | 229.81 | 208.81 | 182.74 | 251.85 | 167.25 s |
+| JPEG (FRM0) | **round trip per frame (PC send → reply in)** | 282.96 | 346.74 | 286.38 | 221.65 | 410.88 | 229.39 s |
+| raw (RAW0) | PC → board (USB, frame payload) | 68.58 | 70.91 | 68.72 | 66.72 | 86.45 | 55.04 s |
+| raw (RAW0) | board preprocessing | 16.99 | 17.08 | 16.97 | 16.44 | 17.12 | 13.59 s |
+| raw (RAW0) | **Axon inference** | 14.66 | 14.67 | 14.67 | 14.66 | 14.68 | 11.75 s |
+| raw (RAW0) | board → PC (result line + frame if detected) | 1.60 | 27.51 | 6.34 | 0.90 | 29.16 | 5.08 s |
+| raw (RAW0) | **board compute (preprocessing + inference)** | 31.66 | 31.75 | 31.64 | 31.10 | 31.79 | 25.34 s |
+| raw (RAW0) | **round trip per frame (PC send → reply in)** | 102.02 | 128.27 | 106.69 | 99.32 | 145.30 | 85.46 s |
+
+Per-frame values: `board_jpeg_frames.csv`, `board_raw_frames.csv` (columns described in `Board/receiver.py`). In raw mode the PC's decode + resize to 84×84 is not included; on the pill that work moves to the sender.
+
 ## YOLO26n box detector (PC)
 
 `test` = Kvasir-SEG test (100 images) + every test negative as a background image (648), so false positives count. `test_pos` = the 100 polyp images only. mAP at conf 0.001; tightness and false alarms at the deployment confidence (F1-optimal on val).
@@ -112,18 +160,18 @@ Apple M3, macOS-26.5.1-arm64-arm-64bit; batch 1, 336x336 frames, 20 warm-up + 20
 
 | Stage | p50 ms | p95 ms | n | Label | How / where |
 |---|---|---|---|---|---|
-| 1 · frame → board | – | – | 0 | placeholder | not measured: needs the board (lab) or the pill radio link (real system) |
-| 2a · board preprocessing | 1.88 | 2.11 | 801 | host estimate | PC: JPEG decode + area resize + normalise |
-| 2b · board inference | 0.24 | 0.27 | 801 | host estimate | host estimate (PC TFLite interpreter, 1 thread, built-in kernels without XNNPACK; NOT the nRF54LM20 board) |
-| 3 · board → PC (USB) | – | – | 0 | placeholder | not measured on the PC-only run (0 in the timeline) |
-| 4 · YOLO26n on PC CPU | 9.65 | 16.02 | 150 | measured | best_openvino_model (OpenVINO, FP16 compute on ARM), PC CPU, 4 threads, pre+infer+post |
-| &nbsp;&nbsp;4a · pre | 0.64 | 0.88 | 150 | measured |  |
-| &nbsp;&nbsp;4b · infer | 8.89 | 14.92 | 150 | measured |  |
-| &nbsp;&nbsp;4c · post | 0.07 | 0.19 | 150 | measured |  |
-| **Detection total** (2 + 3 + 4) | 11.84 | 18.57 | 143 | host estimate | t_detect - t_capture per frame with boxes = stage 2 + 3 + 4 (stage 1 not included) |
-| 5 · simulation per box | 783.52 | 821.46 | 149 | measured | bbox_replay process_box() wall time (full PBS run per box until the lookup table exists) |
+| 1 · frame → board | 68.58 | 70.91 | 801 | measured | USB CDC-ACM host->board, from Board/receiver.py |
+| 2a · board preprocessing | 16.99 | 17.08 | 801 | measured | board timer |
+| 2b · board inference | 14.66 | 14.67 | 801 | measured | board cycle counter |
+| 3 · board → PC (USB) | 27.46 | 28.09 | 149 | measured | USB CDC-ACM board->host incl. frame bytes, Board/receiver.py |
+| 4 · YOLO26n on PC CPU | 16.67 | 30.24 | 149 | measured | best_openvino_model (OpenVINO, FP16 compute on ARM), PC CPU, 4 threads, pre+infer+post |
+| &nbsp;&nbsp;4a · pre | 0.93 | 1.36 | 149 | measured |  |
+| &nbsp;&nbsp;4b · infer | 15.47 | 28.59 | 149 | measured |  |
+| &nbsp;&nbsp;4c · post | 0.13 | 0.35 | 149 | measured |  |
+| **Detection total** (2 + 3 + 4) | 75.68 | 89.37 | 143 | measured | t_detect - t_capture per frame with boxes = stage 2 + 3 + 4 (stage 1 not included) |
+| 5 · simulation per box | 789.51 | 831.93 | 149 | measured | bbox_replay process_box() wall time (full PBS run per box until the lookup table exists) |
 
-Detection p95 = **18.6 ms** vs the 100 ms target: **within** budget (host estimate; stage 1 is not included). Counts: {'frames': 801, 'detected': 150, 'frames_with_boxes': 143, 'boxes': 149}.
+Detection p95 = **89.4 ms** vs the 100 ms target: **within** budget (measured; stage 1 is not included). Counts: {'frames': 801, 'detected': 149, 'frames_with_boxes': 143, 'boxes': 149}.
 
 ![latency breakdown](latency_breakdown.png)
 
@@ -136,7 +184,7 @@ In the figure, *detection* is the measured value from this run; *capture* and *n
 | Kvasir-SEG polyp frames flagged by the classifier | 99 / 100 |
 | Kvasir-SEG polyp frames ending with a correct box (IoU ≥ 0.5) | **91 / 100** |
 | All polyp frames ending with any box | 143 / 153 |
-| Polyp-free frames flagged by the classifier | 3 / 648 |
+| Polyp-free frames flagged by the classifier | 2 / 648 |
 | Polyp-free frames ending with a box (false injection) | **0 / 648** |
 
 ### Example frames
@@ -147,45 +195,48 @@ Green = ground truth (Kvasir-SEG), orange = YOLO26n with confidence.
 
 ## What the detection total does and doesn't include
 
-The 100 ms target runs from "frame received on the board" to "boxes out on the PC". In this run the board is a PC
-stand-in, so the measured total is **PC preprocessing + PC TFLite classifier + YOLO26n**, with USB = 0. The pieces
-still missing, and the best current estimate for each (not measured):
+The 100 ms target runs from "frame received on the board" to "boxes out on the PC". Board preprocessing, Axon
+inference and board → PC are now **measured on the nRF54LM20 DK** (section above), YOLO26n on the PC CPU. The frame's
+own transfer PC → board (stage 1) is measured too but not part of the total. The latency table above is from the
+**raw 84×84** board run (`runs/pipeline_board_raw`).
 
-| Missing piece | Estimate | Source |
-|---|---|---|
-| Board JPEG decode (1/4 scale) + LUT on the 128 MHz M33 | unknown, likely 5–30 ms | none yet: first thing to time on the DK |
-| Axon inference, MobileNetV1 0.25 | ≈ 14 ms at 96×96, a bit less at 84×84 | Nordic's published figure for this architecture |
-| USB board → PC, 40 KB frame on "yes" | < 1 ms high speed (480 Mbit/s); ≥ 27 ms full speed (12 Mbit/s) | wire rate only |
-
-Even with the slow end of every estimate (30 + 14 + 27 ms) added to the measured 18.6 ms p95, the total stays
-under 100 ms. That is an estimate until the board numbers exist.
+| Input sent to the board | Board compute p50 (preprocessing + Axon) | Detection total p50 / p95 | Within 100 ms? |
+|---|---|---|---|
+| 336×336 JPEG, decoded on the board | 207.7 ms (193 + 14.9) | 258 / 283 ms | no |
+| 84×84 raw RGB, resized on the PC | 31.7 ms (17.0 + 14.7) | **75.7 / 89.4 ms** | **yes** |
 
 ## Still open
 
-1. **Board numbers.** `Board/` is written but not compiled (no nRF Connect SDK here). Flash it, run
-   `Board/receiver.py`, then `pipeline.py --clf ...`: stages 2 and 3 then become **measured**. Check the Axon input
-   layout (CHW) first, see `Board/README.md`.
-2. **Stage 1 (frame → board)** stays a placeholder: over USB in the lab, the pill's radio link in the real system.
-3. **Capsule domain shift.** Both classifiers find **none** of the 55 Kvasir-Capsule polyp frames (ROC-AUC 0.66–0.74),
+1. **PC → board transfer is slow: ≈ 1.6 ms per 512-byte USB packet** (≈ 68 ms per 20 KB frame at 480 Mbit/s).
+   Not in the detection total, but it limits the frame rate. Logging and the PC write pattern are ruled out; see
+   "Known issue" in `Board/README.md` for what is checked and the next step.
+2. **Raw-mode preprocessing (17 ms) can drop to ≈ 1 ms.** At 84×84 `to_input()` still runs its general float
+   area-resize loop although nothing is resized; a direct LUT copy into CHW is enough. Not done yet, so the numbers
+   above match the firmware in the repo.
+3. **What the pill sends.** Raw 84×84 removes the board's JPEG decode (193 ms → 17 ms) but moves the decode + resize
+   to the sender (≈ 10 ms on the M3 PC here) and needs the full frame for YOLO26n from somewhere else. In the lab
+   pipeline YOLO26n reads the full frame from disk.
+4. **Stage 1 (frame → board)** in the real system is the pill's radio link; here it is USB from the PC.
+5. **Capsule domain shift.** Both classifiers find **none** of the 55 Kvasir-Capsule polyp frames (ROC-AUC 0.66–0.81),
    although they reject capsule normal mucosa almost perfectly. All positives in training are colonoscopy
    frames. A pill system needs capsule polyp frames in training. Kvasir-Capsule has only these 55, all from one video,
    so another capsule polyp source is needed. Until then, the colonoscopy test numbers above do not carry over to
    capsule frames.
-4. **Classifier INT8 at 96×96** misses the 95 % recall target on test (0.941, threshold set on val). The 84×84 model
+6. **Classifier INT8 at 96×96** misses the 95 % recall target on test (0.941, threshold set on val). The 84×84 model
    meets it (0.961) and is now the default for the board and the pipeline.
-5. **YOLO26n format.** INT8 ONNX costs ~5 mAP50-95 points and ~1 IoU point, for no speed gain over OpenVINO FP16
+7. **YOLO26n format.** INT8 ONNX costs ~5 mAP50-95 points and ~1 IoU point, for no speed gain over OpenVINO FP16
    here. The pipeline uses **OpenVINO FP16 at 4 threads**: same accuracy as FP32, 11.7 ms p95. This is an Apple M3
    (ARM). Re-run `YOLO/bench.py` on the PC that will host the detector, since x86 has fast INT8 kernels and the
    ranking may change.
-6. **Simulation per box ≈ 785 ms p50** (full PBS run, N = 1000) is far above the budget. That is the lookup-table
+8. **Simulation per box ≈ 785 ms p50** (full PBS run, N = 1000) is far above the budget. That is the lookup-table
    speed-up (Melwin), outside detection.
-7. **Placeholders kept on purpose.** Pixel → mm mapping in `box_to_geometry()`; *capture* and *network* in the
+9. **Placeholders kept on purpose.** Pixel → mm mapping in `box_to_geometry()`; *capture* and *network* in the
    latency figure are still the visualizer's fake values.
-8. **YOLO26n-P2** (extra stride-4 head) finds more polyps (mAP50 0.943 vs 0.930, 99 vs 95 of 104 matched) but its
+10. **YOLO26n-P2** (extra stride-4 head) finds more polyps (mAP50 0.943 vs 0.930, 99 vs 95 of 104 matched) but its
    boxes are looser (mAP50-95 0.69 vs 0.73, mean IoU 0.873 vs 0.894, ~11 vs ~9 px error, ~4 px too narrow), it raises
    more false alarms (11 vs 7 of 648) and is ~30 % slower (15.2 vs 11.7 ms p95). Box tightness is the priority for
    the simulator, so **YOLO26n stays the default**. Part of P2's recall gain comes from its lower deployment
    confidence (0.25 vs 0.39). Kvasir-SEG has few small polyps, so the case P2 is designed for is barely tested here.
-9. **Small test sets.** 100 Kvasir-SEG test polyps for the boxes, 153 polyp frames for the classifier (53 of them are
+11. **Small test sets.** 100 Kvasir-SEG test polyps for the boxes, 153 polyp frames for the classifier (53 of them are
    Kvasir v1 copies of Kvasir-SEG test images in the uncropped format), 55 capsule polyps from one video. Read
    differences of a point or two as noise.

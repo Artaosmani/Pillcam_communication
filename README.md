@@ -77,7 +77,7 @@ The PC timing in `metrics_test.json` comes from the TFLite interpreter on the PC
 
 ### Checking and compiling for the Axon NPU
 
-The Nordic tools come from the nRF Connect SDK **Edge AI add-on** (not installed here). With the add-on installed:
+The Nordic tools come from the nRF Connect SDK **Edge AI add-on** (tested with NCS v3.4.1 + add-on v3.0.0):
 
 1. Check that every op maps to Axon: run `axons_tflite_model_scan.py` from the add-on on
    `runs/classifier/model_int8.tflite`. `train.py` already lists the ops and warns about any outside
