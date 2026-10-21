@@ -70,12 +70,12 @@ The test split of `Data/splits.json` as 336×336 JPEG frames (`Data/test/frames`
 | JPEG (FRM0) | board → PC (result line + frame if detected) | 1.51 | 33.26 | 7.00 | 0.85 | 48.02 | 5.61 s |
 | JPEG (FRM0) | **board compute (preprocessing + inference)** | 207.74 | 229.81 | 208.81 | 182.74 | 251.85 | 167.25 s |
 | JPEG (FRM0) | **round trip per frame (PC send → reply in)** | 282.96 | 346.74 | 286.38 | 221.65 | 410.88 | 229.39 s |
-| raw (RAW0) | PC → board (USB, frame payload) | 68.58 | 70.91 | 68.72 | 66.72 | 86.45 | 55.04 s |
-| raw (RAW0) | board preprocessing | 16.99 | 17.08 | 16.97 | 16.44 | 17.12 | 13.59 s |
-| raw (RAW0) | **Axon inference** | 14.66 | 14.67 | 14.67 | 14.66 | 14.68 | 11.75 s |
-| raw (RAW0) | board → PC (result line + frame if detected) | 1.60 | 27.51 | 6.34 | 0.90 | 29.16 | 5.08 s |
-| raw (RAW0) | **board compute (preprocessing + inference)** | 31.66 | 31.75 | 31.64 | 31.10 | 31.79 | 25.34 s |
-| raw (RAW0) | **round trip per frame (PC send → reply in)** | 102.02 | 128.27 | 106.69 | 99.32 | 145.30 | 85.46 s |
+| raw (RAW0) | PC → board (USB, frame payload) | 69.30 | 72.85 | 69.65 | 67.62 | 85.86 | 55.79 s |
+| raw (RAW0) | board preprocessing | 1.11 | 1.11 | 1.11 | 1.11 | 1.11 | 0.89 s |
+| raw (RAW0) | **Axon inference** | 14.69 | 14.69 | 14.69 | 14.69 | 14.70 | 11.77 s |
+| raw (RAW0) | board → PC (result line + frame if detected) | 1.66 | 27.33 | 6.39 | 0.96 | 53.63 | 5.12 s |
+| raw (RAW0) | **board compute (preprocessing + inference)** | 15.80 | 15.81 | 15.80 | 15.80 | 15.81 | 12.66 s |
+| raw (RAW0) | **round trip per frame (PC send → reply in)** | 87.00 | 113.29 | 91.84 | 84.83 | 138.12 | 73.57 s |
 
 Per-frame values: `board_jpeg_frames.csv`, `board_raw_frames.csv` (columns described in `Board/receiver.py`). In raw mode the PC's decode + resize to 84×84 is not included; on the pill that work moves to the sender.
 
@@ -160,18 +160,18 @@ Apple M3, macOS-26.5.1-arm64-arm-64bit; batch 1, 336x336 frames, 20 warm-up + 20
 
 | Stage | p50 ms | p95 ms | n | Label | How / where |
 |---|---|---|---|---|---|
-| 1 · frame → board | 68.58 | 70.91 | 801 | measured | USB CDC-ACM host->board, from Board/receiver.py |
-| 2a · board preprocessing | 16.99 | 17.08 | 801 | measured | board timer |
-| 2b · board inference | 14.66 | 14.67 | 801 | measured | board cycle counter |
-| 3 · board → PC (USB) | 27.46 | 28.09 | 149 | measured | USB CDC-ACM board->host incl. frame bytes, Board/receiver.py |
-| 4 · YOLO26n on PC CPU | 16.67 | 30.24 | 149 | measured | best_openvino_model (OpenVINO, FP16 compute on ARM), PC CPU, 4 threads, pre+infer+post |
-| &nbsp;&nbsp;4a · pre | 0.93 | 1.36 | 149 | measured |  |
-| &nbsp;&nbsp;4b · infer | 15.47 | 28.59 | 149 | measured |  |
-| &nbsp;&nbsp;4c · post | 0.13 | 0.35 | 149 | measured |  |
-| **Detection total** (2 + 3 + 4) | 75.68 | 89.37 | 143 | measured | t_detect - t_capture per frame with boxes = stage 2 + 3 + 4 (stage 1 not included) |
-| 5 · simulation per box | 789.51 | 831.93 | 149 | measured | bbox_replay process_box() wall time (full PBS run per box until the lookup table exists) |
+| 1 · frame → board | 69.30 | 72.85 | 801 | measured | USB CDC-ACM host->board, from Board/receiver.py |
+| 2a · board preprocessing | 1.11 | 1.11 | 801 | measured | board timer |
+| 2b · board inference | 14.69 | 14.69 | 801 | measured | board cycle counter |
+| 3 · board → PC (USB) | 27.24 | 28.41 | 149 | measured | USB CDC-ACM board->host incl. frame bytes, Board/receiver.py |
+| 4 · YOLO26n on PC CPU | 17.52 | 29.84 | 149 | measured | best_openvino_model (OpenVINO, FP16 compute on ARM), PC CPU, 4 threads, pre+infer+post |
+| &nbsp;&nbsp;4a · pre | 1.03 | 1.44 | 149 | measured |  |
+| &nbsp;&nbsp;4b · infer | 16.18 | 28.12 | 149 | measured |  |
+| &nbsp;&nbsp;4c · post | 0.16 | 0.38 | 149 | measured |  |
+| **Detection total** (2 + 3 + 4) | 60.55 | 76.39 | 143 | measured | t_detect - t_capture per frame with boxes = stage 2 + 3 + 4 (stage 1 not included) |
+| 5 · simulation per box | 801.41 | 930.55 | 149 | measured | bbox_replay process_box() wall time (full PBS run per box until the lookup table exists) |
 
-Detection p95 = **89.4 ms** vs the 100 ms target: **within** budget (measured; stage 1 is not included). Counts: {'frames': 801, 'detected': 149, 'frames_with_boxes': 143, 'boxes': 149}.
+Detection p95 = **76.4 ms** vs the 100 ms target: **within** budget (measured; stage 1 is not included). Counts: {'frames': 801, 'detected': 149, 'frames_with_boxes': 143, 'boxes': 149}.
 
 ![latency breakdown](latency_breakdown.png)
 
@@ -203,17 +203,18 @@ own transfer PC → board (stage 1) is measured too but not part of the total. T
 | Input sent to the board | Board compute p50 (preprocessing + Axon) | Detection total p50 / p95 | Within 100 ms? |
 |---|---|---|---|
 | 336×336 JPEG, decoded on the board | 207.7 ms (193 + 14.9) | 258 / 283 ms | no |
-| 84×84 raw RGB, resized on the PC | 31.7 ms (17.0 + 14.7) | **75.7 / 89.4 ms** | **yes** |
+| 84×84 raw RGB, resized on the PC | 15.8 ms (1.1 + 14.7) | **60.6 / 76.4 ms** | **yes** |
 
 ## Still open
 
 1. **PC → board transfer is slow: ≈ 1.6 ms per 512-byte USB packet** (≈ 68 ms per 20 KB frame at 480 Mbit/s).
-   Not in the detection total, but it limits the frame rate. Logging and the PC write pattern are ruled out; see
-   "Known issue" in `Board/README.md` for what is checked and the next step.
-2. **Raw-mode preprocessing (17 ms) can drop to ≈ 1 ms.** At 84×84 `to_input()` still runs its general float
-   area-resize loop although nothing is resized; a direct LUT copy into CHW is enough. Not done yet, so the numbers
-   above match the firmware in the repo.
-3. **What the pill sends.** Raw 84×84 removes the board's JPEG decode (193 ms → 17 ms) but moves the decode + resize
+   Not in the detection total, but it limits the frame rate. The board CPU is **100 % busy** for the whole receive and
+   the data reaches `uart_cb` in ≈ 64-byte pieces (≈ 330 reads per frame, ≈ 0.2 ms CPU each); RX back-pressure never
+   triggers, and the PC write pattern and USB driver logging are ruled out. Next: per-thread CPU time over the
+   receive window (`Board/README.md`, "Known issue").
+2. **YOLO26n timing varies between runs on the same PC** (p50 12.1 ms in the JPEG board run, 17.5 ms in the last raw
+   run, same model and threads), most likely other load on the M3. Close other programs for timing runs.
+3. **What the pill sends.** Raw 84×84 removes the board's JPEG decode (193 ms → 1.1 ms) but moves the decode + resize
    to the sender (≈ 10 ms on the M3 PC here) and needs the full frame for YOLO26n from somewhere else. In the lab
    pipeline YOLO26n reads the full frame from disk.
 4. **Stage 1 (frame → board)** in the real system is the pill's radio link; here it is USB from the PC.
