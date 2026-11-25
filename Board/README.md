@@ -41,6 +41,17 @@ R,<frame_id>,<t_first_us>,<t_rx_us>,<t_infer_start_us>,<t_infer_end_us>,<t_sent_
 followed by `n` bytes (the same payload) when `detected=1`. The last four fields are receive diagnostics for the
 frame (see "Known issue"); `receiver.py` ignores them.
 
+Edge-vs-board comparison (`Anomally_detection/compare.py`):
+
+| Message | Payload | Board | Reply |
+|---|---|---|---|
+| `"FWD0"` | 336×336 JPEG | nothing: baseline, every frame goes to the edge | the `R` line with `detected=1`, then the JPEG |
+| `"DET0"` | 160×160 RGB888 (76,800 B) | YOLO26-Axon box detector (`src/axon_int8.h`, `generated/nrf_axon_model_det_.h`, from `YOLO/export_axon.py`), decode on the CPU | `D,<frame_id>,<t_first>,<t_rx>,<t_infer_start>,<t_infer_end>,<t_decode_end>,<t_sent>,<n>[,x0,y0,x1,y1,conf]…` |
+| `"CMD0"` | ≤ 64 B (injection command) | the actuation point | `A,<frame_id>,<t_first>,<t_rx>` as soon as it is in |
+
+`receiver.py --fwd/--raw --edge-model <yolo>` and `--det` close the loop: when a frame ends with a box, the PC sends
+`CMD0`; `e2e_ms` = board `t_rx` of the command − board `t_rx` of the frame (one clock).
+
 ## How each time is measured
 
 Board times use `k_cycle_get_64()` on the 1 MHz system clock (1 µs resolution): `t_first` = 12-byte header received,
