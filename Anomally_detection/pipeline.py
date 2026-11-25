@@ -8,7 +8,8 @@ Frames: Data/test/frames/frame_NNNNNN.jpg, 336×336 JPEG (q90, ~40 KB), the shar
 Kvasir-SEG/Kvasir test polyps + test negatives, squashed to 336×336 the way the classifier is trained. Built once,
 with Data/test/labels.csv (frame_id,file,polyp,source) and Data/test/gt_boxes.csv (Kvasir-SEG boxes in 336 px).
 Outputs in --out: classifier.csv, boxes.csv (+ .timing.csv), bbox_replay_out.csv, latency_breakdown.png/.pdf,
-latency_stages.csv, latency_summary.json. Every stage in the summary is labelled measured, host estimate or placeholder.
+latency_stages.csv, latency_summary.json, frame_stages.csv + frame_stages.png (every stage of every frame, see
+frame_stages()). Every stage in the summary is labelled measured, host estimate or placeholder.
 """
 import argparse
 import csv
@@ -97,6 +98,88 @@ def end_to_end(clf, boxes, test_dir):
             "negative_frames_with_box": sum(f in pred for f in neg)}
 
 
+LOOP = [("frame_to_board", "frame → board (USB)", "#898781"), ("clf_pre", "classifier pre (board)", "#2a78d6"),
+        ("clf_infer", "classifier inference (Axon)", "#6250d6"), ("board_to_pc", "board → PC (USB)", "#c3c2b7"),
+        ("yolo", "YOLO26n (PC)", "#eb6834")]
+YOLO_PARTS = [("pre", "pre (resize, pad, to tensor)", "#2a78d6"), ("backbone", "backbone", "#eb6834"),
+              ("neck", "neck", "#1baf7a"), ("head", "head", "#eda100"),
+              ("post", "post (filter, NMS, rescale, sort)", "#6250d6")]  # dataviz reference palette, fixed order
+
+
+def frame_stages(out):
+    """One row per frame, every stage in ms -> frame_stages.csv, and a per-frame figure -> frame_stages.png.
+    detect_ms = board pre + inference + send + board -> PC + YOLO (= t_detect - t_capture in boxes.csv; frame -> board not
+    included). loop_ms = frame -> board + detect_ms + simulation (sum over the frame's boxes, bbox_replay runs them one
+    after another). YOLO and simulation columns are empty for frames the classifier did not flag."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from YOLO.runner import STEPS
+
+    tim = {r["frame_id"]: r for r in csv.DictReader(open(out / "boxes.timing.csv"))}
+    sim = {}
+    for r in csv.DictReader(open(out / "bbox_replay_out.csv")):
+        sim[r["frame_id"]] = sim.get(r["frame_id"], 0.0) + float(r["latency_ms"])
+    ns = lambda r, a, b: (int(r[b]) - int(r[a])) / 1e6
+    steps = [k for v in STEPS.values() for k in v]
+    cols = ["frame_id", "detected", "n_boxes", "frame_to_board", "clf_pre", "clf_infer", "board_send", "board_to_pc",
+            "yolo", "yolo_pre", "yolo_infer", "yolo_post", *steps, "simulation", "detect_ms", "loop_ms"]
+    rows = []
+    for r in csv.DictReader(open(out / "classifier.csv")):
+        t = tim.get(r["frame_id"])
+        row = {"frame_id": int(r["frame_id"]), "detected": int(r["detected"]), "n_boxes": t and int(t["n_boxes"]),
+               "frame_to_board": int(r.get("usb_down_ns") or 0) / 1e6, "clf_pre": ns(r, "t_rx_board_ns", "t_infer_start_ns"),
+               "clf_infer": ns(r, "t_infer_start_ns", "t_infer_end_ns"), "board_send": ns(r, "t_infer_end_ns", "t_sent_ns"),
+               "board_to_pc": int(r.get("usb_ns") or 0) / 1e6}
+        if t:
+            row.update(yolo=float(t["yolo_ms"]), yolo_pre=float(t["pre_ms"]), yolo_infer=float(t["infer_ms"]),
+                       yolo_post=float(t["post_ms"]), **{k: float(t[f"{k}_ms"]) for k in steps if t.get(f"{k}_ms")},
+                       simulation=sim.get(r["frame_id"], 0.0))
+        row["detect_ms"] = sum(row.get(k) or 0 for k in ("clf_pre", "clf_infer", "board_send", "board_to_pc", "yolo"))
+        row["loop_ms"] = row["frame_to_board"] + row["detect_ms"] + (row.get("simulation") or 0)
+        rows.append(row)
+    with open(out / "frame_stages.csv", "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=cols)
+        w.writeheader()
+        w.writerows({k: (f"{v:.4f}" if isinstance(v, float) else v) for k, v in r.items()} for r in rows)
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 7.5), dpi=200)
+    fig.patch.set_facecolor("#fcfcfb")
+    det = [r for r in rows if "yolo" in r]
+    vals = {k: np.array([r.get(f"yolo_{k}", r.get(k, 0.0)) or 0.0 for r in det]) for k, *_ in YOLO_PARTS}
+    x, bottom = np.arange(len(det)), np.zeros(len(det))
+    for k, label, c in YOLO_PARTS:
+        ax1.bar(x, vals[k], bottom=bottom, width=0.85, color=c, label=label)
+        bottom += vals[k]
+    ax1.set_title(f"Detection per frame: YOLO26n steps ({len(det)} frames the classifier flagged)", loc="left",
+                  fontsize=10)
+    ax1.set_xlabel("flagged frame (in replay order)", fontsize=9, color="#52514e")
+    x2, bottom = np.arange(len(rows)), np.zeros(len(rows))
+    for k, label, c in LOOP:
+        v = np.array([r.get(k) or 0.0 for r in rows]) + (np.array([r["board_send"] for r in rows]) if k == "clf_infer" else 0)
+        ax2.bar(x2, v, bottom=bottom, width=1.0, color=c, label=label, linewidth=0)
+        bottom += v
+    sim_v = [r["simulation"] for r in det if r.get("simulation")]
+    ax2.set_title("Full loop per frame: frame in → classification → (if flagged) detection.  Simulation per flagged "
+                  f"frame not drawn: p50 {np.percentile(sim_v, 50):.0f} ms" if sim_v else "Full loop per frame",
+                  loc="left", fontsize=10)
+    ax2.set_xlabel("frame (replay order)", fontsize=9, color="#52514e")
+    for ax in (ax1, ax2):
+        ax.set_facecolor("#fcfcfb")
+        ax.set_ylabel("ms", fontsize=9, color="#52514e")
+        ax.tick_params(colors="#52514e", labelsize=8, length=0)
+        ax.grid(axis="y", color="#e4e3df", linewidth=0.6), ax.set_axisbelow(True)
+        for sp in ax.spines.values():
+            sp.set_visible(False)
+        ax.legend(frameon=False, fontsize=8, ncol=3, loc="upper right")
+        ax.set_xlim(-1, ax.get_xlim()[1])
+    ax1.set_ylim(0, ax1.get_ylim()[1] * 1.25), ax2.set_ylim(0, ax2.get_ylim()[1] * 1.25)
+    fig.tight_layout()
+    fig.savefig(out / "frame_stages.png", facecolor=fig.get_facecolor())
+    print(f"[frames] per-frame stages -> {out / 'frame_stages.csv'}, frame_stages.png")
+    return rows
+
+
 def summary(out, board, yolo_model, threads, frames_dir):
     """Per-stage p50/p95 with where/how each number was measured, plus the end-to-end counts."""
     clf = list(csv.DictReader(open(out / "classifier.csv")))
@@ -162,7 +245,7 @@ def main():
     if clf != out / "classifier.csv":
         (out / "classifier.csv").write_bytes(Path(clf).read_bytes())
     run([PY, ROOT / "YOLO/run_boxes.py", "--clf", out / "classifier.csv", "--frames", a.frames, "--model", a.yolo,
-         "--threads", a.threads, "--out", out / "boxes.csv"])
+         "--threads", a.threads, "--profile", "--out", out / "boxes.csv"])
     replay = build_replay()
     run([replay, "--csv", out / "boxes.csv", "--out", out / "bbox_replay_out.csv", *shlex.split(a.replay_args)])
     run([PY, PBS / "visualizers/plot_latency_breakdown.py", "--boxes", out / "boxes.csv",
@@ -171,6 +254,7 @@ def main():
          " + YOLO); capture and network still fake; lookup = full PBS run per box"],
         cwd=PBS / "visualizers")
     summary(out, bool(a.clf), a.yolo, a.threads, a.frames)
+    frame_stages(out)
 
 
 def parse_args():
