@@ -9,6 +9,8 @@ Data/.DS_Store
 *.keras
 *.tflite
 Anomally_detection/runs/
+Anomally_detection/results/**/*.json
+Anomally_detection/results/**/*.csv
 
 # datasets and training weights stay out of git (kept on disk)
 Anomally_detection/Data/**/*.jpg

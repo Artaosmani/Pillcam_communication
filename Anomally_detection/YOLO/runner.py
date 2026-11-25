@@ -14,14 +14,22 @@ import numpy as np
 
 
 class Detector:
-    def __init__(self, path, threads=1, conf=0.25, iou=0.6, backend=None):
-        """path: .onnx file, or an OpenVINO .xml / *_openvino_model dir. backend: ort | openvino (default from path)."""
+    def __init__(self, path, threads=1, conf=0.25, iou=0.6, backend=None, max_det=10):
+        """path: .onnx file, an OpenVINO .xml / *_openvino_model dir, or the board model best_axon_int8.tflite
+        (YOLO/export_axon.py). backend: ort | openvino | tflite (default from path)."""
         path = Path(path)
         if path.is_dir():
             path = next(path.glob("*.xml"))
-        self.backend = backend or ("openvino" if path.suffix == ".xml" else "ort")
-        self.conf, self.iou, self.threads = conf, iou, threads
-        if self.backend == "ort":
+        self.backend = backend or {".xml": "openvino", ".tflite": "tflite"}.get(path.suffix, "ort")
+        self.conf, self.iou, self.threads, self.max_det = conf, iou, threads, max_det
+        if self.backend == "tflite":
+            from ai_edge_litert.interpreter import Interpreter
+            self.interp = Interpreter(model_path=str(path), num_threads=threads)
+            self.interp.allocate_tensors()
+            d = self.interp.get_input_details()[0]
+            self.size, self.in_q = int(d["shape"][1]), d["quantization"]
+            self._run = self._run_tflite
+        elif self.backend == "ort":
             import onnxruntime as ort
             so = ort.SessionOptions()
             so.intra_op_num_threads, so.inter_op_num_threads = threads, 1
@@ -52,6 +60,16 @@ class Detector:
         x = np.ascontiguousarray(img[..., ::-1].transpose(2, 0, 1)[None], dtype=np.float32) / 255.0
         return x, (r, left, top, w, h)
 
+    def _run_tflite(self, x):
+        """INT8 board model: 6 raw head outputs -> 1×N×6 [x0, y0, x1, y1, conf, cls], decoded like the board does it."""
+        scale, zp = self.in_q
+        q = np.clip(np.round(x[0].transpose(1, 2, 0) / scale + zp), -128, 127).astype(np.int8)[None]
+        self.interp.set_tensor(self.interp.get_input_details()[0]["index"], q)
+        self.interp.invoke()
+        return decode_axon([(self.interp.get_tensor(o["index"]).astype(np.float32) - o["quantization"][1])
+                            * o["quantization"][0] for o in self.interp.get_output_details()],
+                           self.size, self.conf, self.max_det)
+
     def postprocess(self, out, meta):
         """Raw output -> N×5 boxes in input-image pixels. End-to-end head (1×300×6: x0,y0,x1,y1,conf,cls) needs no NMS;
         the one-to-many head (1×5×A: cx,cy,w,h,conf) gets OpenCV NMS."""
@@ -78,6 +96,24 @@ class Detector:
         boxes = self.postprocess(out, meta)
         t3 = time.perf_counter()
         return boxes, {"pre": t1 - t0, "infer": t2 - t1, "post": t3 - t2}
+
+
+def decode_axon(outs, size, conf, max_det):
+    """Raw one-to-one head (per level: box 1×g×g×4 = left/top/right/bottom in cells, cls 1×g×g×1 logit; any order)
+    -> 1×N×6 [x0, y0, x1, y1, conf, 0] in model-input pixels, best max_det with conf >= conf (no NMS: one-to-one head).
+    The board firmware (Board/src/main.c, decode_boxes) does the same."""
+    rows = []
+    for g in sorted({o.shape[1] for o in outs}, reverse=True):
+        box = next(o for o in outs if o.shape[1] == g and o.shape[3] == 4)[0]
+        cls = next(o for o in outs if o.shape[1] == g and o.shape[3] == 1)[0, ..., 0]
+        s = size / g
+        gy, gx = np.mgrid[:g, :g] + 0.5
+        p = 1 / (1 + np.exp(-cls))
+        rows.append(np.stack([(gx - box[..., 0]) * s, (gy - box[..., 1]) * s, (gx + box[..., 2]) * s,
+                              (gy + box[..., 3]) * s, p, np.zeros_like(p)], -1).reshape(-1, 6))
+    b = np.concatenate(rows)
+    b = b[b[:, 4] >= conf]
+    return b[np.argsort(-b[:, 4])[:max_det]][None]
 
 
 def iou(a, b):

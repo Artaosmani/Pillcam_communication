@@ -10,6 +10,14 @@
  *   "R,<frame_id>,<t_first_us>,<t_rx_us>,<t_infer_start_us>,<t_infer_end_us>,<t_sent_us>,<raw>,<score>,<detected>,<n>,
  *    <rx_reads>,<rx_gap_max_us>,<rx_pauses>,<rx_busy_pct>\n"
  *   followed by n bytes (the same payload, JPEG or raw) when detected=1, else n=0.
+ *   "FWD0" | u32 frame_id | u32 len | bytes: baseline "everything to the edge": no compute, the same R line with
+ *                                            detected=1 and the payload forwarded as is.
+ *   "DET0" | u32 frame_id | u32 len | RGB888 DET_INPUT_SIZE^2 (160x160 = 76800 B): YOLO26 box detector on Axon
+ *     -> "D,<frame_id>,<t_first_us>,<t_rx_us>,<t_infer_start_us>,<t_infer_end_us>,<t_decode_end_us>,<t_sent_us>,
+ *         <n_boxes>[,<x0>,<y0>,<x1>,<y1>,<conf>]...\n"   boxes in model-input pixels, conf >= DET_CONF_FLOOR,
+ *         best first, at most DET_MAX (the PC applies the deployment confidence)
+ *   "CMD0" | u32 frame_id | u32 len | command bytes (<= 64): injection command from the edge
+ *     -> "A,<frame_id>,<t_first_us>,<t_rx_us>\n" as soon as the command is in (the actuation point)
  * Times are board uptime in microseconds (k_cycle_get_64): t_first = header received, t_rx = last frame byte
  * received, t_infer_start/end around the Axon call only, t_sent = just before the reply is written.
  * t_rx -> t_infer_start is the preprocessing (JPEG decode at reduced scale, resize, input LUT, HWC -> CHW; for
@@ -33,7 +41,9 @@
 #include "drivers/axon/nrf_axon_driver.h"
 #include "drivers/axon/nrf_axon_nn_infer.h"
 #include "generated/nrf_axon_model_polyp_.h"
+#include "generated/nrf_axon_model_det_.h"
 #include "model_int8.h"
+#include "axon_int8.h"
 #include "tjpgd.h"
 
 LOG_MODULE_REGISTER(polyp, LOG_LEVEL_INF);
@@ -45,6 +55,11 @@ LOG_MODULE_REGISTER(polyp, LOG_LEVEL_INF);
 /* 84 = 336/4: a 1/4-scale decode is the model input. 96: decode at 1/2 (168 px) and area-resize to 96. */
 #define JPEG_SCALE ((S) == 84 ? 2 : 1)   /* tjpgd scale: 0 = 1/1, 1 = 1/2, 2 = 1/4, 3 = 1/8 */
 #define DEC_SIDE   (FRAME_SIDE >> JPEG_SCALE)
+#define DET_MODEL  model_det    /* axon/det_compile.yaml */
+#define DET_BYTES  (DET_INPUT_SIZE * DET_INPUT_SIZE * 3)
+#define DET_MAX    5
+#define DET_CONF_FLOOR 0.10f
+#define MAX_CMD    64
 
 static const struct device *const cdc = DEVICE_DT_GET_ONE(zephyr_cdc_acm_uart);
 
@@ -53,11 +68,13 @@ RING_BUF_DECLARE(tx_ring, 16 * 1024);
 static K_SEM_DEFINE(rx_sem, 0, 1);
 static K_SEM_DEFINE(tx_sem, 0, 1);
 
-static uint8_t jpeg[MAX_JPEG];
+static uint8_t jpeg[MAX(MAX_JPEG, DET_BYTES)];  /* JPEG, FWD0 or DET0 payload */
 static uint8_t decoded[DEC_SIDE * DEC_SIDE * 3];   /* RGB888 at the decode scale */
 static uint8_t tjpgd_pool[4096];
 static int8_t input_chw[3 * S * S];               /* Axon wants channels outermost (TFLite is HWC) */
 static int8_t output[16];
+static int8_t det_chw[DET_BYTES];
+static int8_t det_out[4096];                      /* packed head outputs, checked against the model in main() */
 
 /* ------------------------------------------------------------------ USB CDC-ACM */
 
@@ -238,14 +255,106 @@ static int preprocess(size_t len)
 	return 0;
 }
 
+/* ------------------------------------------------------------------ box detector */
+
+struct box { float x0, y0, x1, y1, conf; };
+
+/* Raw one-to-one head -> best DET_MAX boxes, same as runner.decode_axon() on the PC. Per level: a 1-channel class
+ * logit and a 4-channel box (left/top/right/bottom distance in cells from the cell centre), both CHW. */
+static int decode_boxes(const nrf_axon_nn_compiled_model_s *m, struct box *best)
+{
+	const float floor_logit = logf(DET_CONF_FLOOR / (1 - DET_CONF_FLOOR));
+	int nb = 0;
+
+	for (int i = 0; i < m->output_cnt; i++) {
+		const nrf_axon_compiled_model_output_s *c = &m->outputs[i], *b = NULL;
+		int g = c->dimensions.height;
+
+		if (c->dimensions.channel_cnt != 1) {
+			continue;
+		}
+		for (int j = 0; j < m->output_cnt; j++) {
+			if (m->outputs[j].dimensions.channel_cnt == 4 && m->outputs[j].dimensions.height == g) {
+				b = &m->outputs[j];
+			}
+		}
+		const float cs = ldexpf(c->dequant_mult, -c->dequant_round), bs = ldexpf(b->dequant_mult, -b->dequant_round);
+		const float st = (float)DET_INPUT_SIZE / g;
+		const int8_t *cq = det_out + c->packed_buffer_offset, *bq = det_out + b->packed_buffer_offset;
+
+		for (int k = 0; k < g * g; k++) {
+			float logit = (cq[k] - c->dequant_zp) * cs;
+
+			if (logit < floor_logit) {
+				continue;
+			}
+			float ax = k % g + 0.5f, ay = k / g + 0.5f, d[4];
+
+			for (int ch = 0; ch < 4; ch++) {
+				d[ch] = (bq[ch * g * g + k] - b->dequant_zp) * bs;
+			}
+			struct box nbx = {(ax - d[0]) * st, (ay - d[1]) * st, (ax + d[2]) * st, (ay + d[3]) * st,
+					  1.0f / (1.0f + expf(-logit))};
+			int at = nb < DET_MAX ? nb++ : DET_MAX;
+
+			while (at > 0 && best[at - 1].conf < nbx.conf) { /* insertion sort, best first */
+				if (at < DET_MAX) {
+					best[at] = best[at - 1];
+				}
+				at--;
+			}
+			if (at < DET_MAX) {
+				best[at] = nbx;
+			}
+		}
+	}
+	return nb;
+}
+
+static void run_det(uint32_t fid, uint64_t t_first, uint64_t t_rx, char *line, size_t size)
+{
+	struct box best[DET_MAX];
+
+	for (int i = 0; i < DET_INPUT_SIZE * DET_INPUT_SIZE; i++) {
+		for (int c = 0; c < 3; c++) {
+			det_chw[c * DET_INPUT_SIZE * DET_INPUT_SIZE + i] = det_input_lut[jpeg[i * 3 + c]];
+		}
+	}
+	uint64_t t0 = now_us();
+	int err = nrf_axon_nn_model_infer_sync(&DET_MODEL, det_chw, det_out);
+	uint64_t t1 = now_us();
+	int nb = err ? 0 : decode_boxes(&DET_MODEL, best);
+	uint64_t t2 = now_us();
+
+	if (err) {
+		LOG_ERR("frame %u: detector error %d", fid, err);
+	}
+	int n = snprintk(line, size, "D,%u,%llu,%llu,%llu,%llu,%llu,%llu,%d", fid, t_first, t_rx, t0, t1, t2, now_us(),
+			 nb);
+
+	for (int i = 0; i < nb; i++) {
+		n += snprintk(line + n, size - n, ",%d,%d,%d,%d,%.3f", (int)lroundf(best[i].x0), (int)lroundf(best[i].y0),
+			      (int)lroundf(best[i].x1), (int)lroundf(best[i].y1), (double)best[i].conf);
+	}
+	n += snprintk(line + n, size - n, "\n");
+	write_all(line, n);
+}
+
 /* ------------------------------------------------------------------ main loop */
 
 int main(void)
 {
-	char line[160];
+	char line[384];
 
-	if (nrf_axon_platform_init() != 0 || nrf_axon_nn_model_validate(&MODEL) != 0) {
+	if (nrf_axon_platform_init() != 0 || nrf_axon_nn_model_validate(&MODEL) != 0 ||
+	    nrf_axon_nn_model_validate(&DET_MODEL) != 0) {
 		LOG_ERR("Axon init / model validate failed");
+		return 0;
+	}
+	const nrf_axon_compiled_model_output_s *last = &DET_MODEL.outputs[DET_MODEL.output_cnt - 1];
+
+	if (last->packed_buffer_offset + last->packed_size > sizeof(det_out)) {
+		LOG_ERR("det_out too small: %u B needed", last->packed_buffer_offset + last->packed_size);
 		return 0;
 	}
 	struct usbd_context *usbd = sample_usbd_init_device(NULL);
@@ -262,9 +371,10 @@ int main(void)
 		uint8_t hdr[12];
 
 		read_exact(hdr, 4);
-		bool is_raw = !memcmp(hdr, "RAW0", 4);
+		bool is_raw = !memcmp(hdr, "RAW0", 4), is_fwd = !memcmp(hdr, "FWD0", 4);
+		bool is_det = !memcmp(hdr, "DET0", 4), is_cmd = !memcmp(hdr, "CMD0", 4);
 
-		if (!is_raw && memcmp(hdr, "FRM0", 4)) {
+		if (!is_raw && !is_fwd && !is_det && !is_cmd && memcmp(hdr, "FRM0", 4)) {
 			continue; /* resync */
 		}
 		read_exact(hdr + 4, 8);
@@ -276,25 +386,34 @@ int main(void)
 		uint32_t fid = sys_get_le32(hdr + 4), len = sys_get_le32(hdr + 8);
 		uint8_t *payload = is_raw ? decoded : jpeg;
 
-		if (is_raw ? len != sizeof(decoded) : len > MAX_JPEG) {
+		if (is_raw ? len != sizeof(decoded) : is_det ? len != DET_BYTES : is_cmd ? len > MAX_CMD : len > MAX_JPEG) {
 			LOG_ERR("frame %u: bad length %u", fid, len);
 			continue;
 		}
 		read_exact(payload, len);
 		uint64_t t_rx = now_us();
 
+		if (is_cmd) { /* the actuation point: a real device would start the injection here */
+			write_all(line, snprintk(line, sizeof(line), "A,%u,%llu,%llu\n", fid, t_first, t_rx));
+			continue;
+		}
+		if (is_det) {
+			run_det(fid, t_first, t_rx, line, sizeof(line));
+			continue;
+		}
+
 		k_thread_runtime_stats_all_get(&cpu1);
 		/* CPU busy share while the payload came in (ISRs count towards the thread they interrupt) */
 		uint32_t busy_pct = (uint32_t)(100 * (cpu1.total_cycles - cpu0.total_cycles) /
 					       MAX(cpu1.execution_cycles - cpu0.execution_cycles, 1));
 
-		int err = is_raw ? (to_input(), 0) : preprocess(len);
+		int err = is_fwd ? 0 : is_raw ? (to_input(), 0) : preprocess(len);
 		uint64_t t0 = now_us();
-		int infer = err ? err : nrf_axon_nn_model_infer_sync(&MODEL, input_chw, output);
+		int infer = err || is_fwd ? err : nrf_axon_nn_model_infer_sync(&MODEL, input_chw, output);
 		uint64_t t1 = now_us();
 
-		int raw = infer ? -128 : output[0];
-		int det = !infer && raw >= POLYP_THRESHOLD_INT8;
+		int raw = infer ? -128 : is_fwd ? 127 : output[0];
+		int det = is_fwd || (!infer && raw >= POLYP_THRESHOLD_INT8);
 		float score = 1.0f / (1.0f + expf(-(raw - POLYP_OUTPUT_ZERO_POINT) * POLYP_OUTPUT_SCALE));
 
 		if (infer) {

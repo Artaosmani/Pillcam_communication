@@ -90,11 +90,12 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     p.add_argument("--weights", type=Path, required=True, help="best.pt; exports are looked up next to it")
-    p.add_argument("--formats", nargs="+", default=["pt", "onnx", "int8", "openvino_fp16"],
+    p.add_argument("--imgsz", type=int, help="override train.imgsz (160 for the Axon model)")
+    p.add_argument("--formats", nargs="+", default=["pt", "onnx", "int8", "openvino_fp16", "axon_int8"],
                    help="formats to (re)evaluate; others already in metrics_eval.json are kept")
     a = p.parse_args()
     cfg = yaml.safe_load(a.config.read_text())
-    data, imgsz = str(data_yaml_path(cfg)), cfg["train"]["imgsz"]
+    data, imgsz = str(data_yaml_path(cfg)), a.imgsz or cfg["train"]["imgsz"]
     ds = yaml.safe_load(Path(data).read_text())
 
     m, _ = val(a.weights, data, "val", imgsz, resolve_device("auto"))
@@ -105,7 +106,8 @@ def main():
 
     formats = {"pt": a.weights, "onnx": a.weights.with_suffix(".onnx"),
                "int8": a.weights.with_name(f"{a.weights.stem}_int8.onnx"),
-               "openvino_fp16": a.weights.with_name(f"{a.weights.stem}_openvino_model")}
+               "openvino_fp16": a.weights.with_name(f"{a.weights.stem}_openvino_model"),
+               "axon_int8": a.weights.with_name(f"{a.weights.stem}_axon_int8.tflite")}  # YOLO/export_axon.py
     path = a.weights.parent.parent / "metrics_eval.json"
     old = json.loads(path.read_text()) if path.exists() else {}
     out = {"weights": str(a.weights), "imgsz": imgsz, "deploy_conf": conf,
@@ -114,7 +116,12 @@ def main():
         if name not in a.formats or not path_.exists():
             continue
         dev = resolve_device("auto") if name == "pt" else "cpu"
-        r = {"test": val(path_, data, "test", imgsz, dev)[1], "test_pos": val(path_, data, "test_pos", imgsz, dev)[1]}
+        # the board model's raw head isn't something ultralytics val can run: boxes and false alarms only
+        r = {} if name == "axon_int8" else {"test": val(path_, data, "test", imgsz, dev)[1],
+                                            "test_pos": val(path_, data, "test_pos", imgsz, dev)[1]}
+        if name == "pt" and not formats["onnx"].exists():
+            out["formats"][name] = r
+            continue
         det = Detector(formats["onnx"] if name == "pt" else path_, conf=conf)  # pt boxes = FP32 ONNX boxes
         r["tightness"] = tightness(det, ds["test_pos"])
         r["false_alarms"] = false_alarms(det, ds["test"])

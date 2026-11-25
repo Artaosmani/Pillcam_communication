@@ -14,19 +14,31 @@ from pathlib import Path
 
 
 def fake_board(server, n_frames, got):
-    """Speaks the firmware protocol: frames with an even id are 'polyps' and get echoed. Payloads go into `got`."""
+    """Speaks the firmware protocol: frames with an even id are 'polyps' and get echoed (FWD0: every frame), DET0
+    gets one box for them, CMD0 an ack 2 ms later on the board clock. Payloads go into `got`."""
     conn, _ = server.accept()
     f = conn.makefile("rwb", buffering=0)
     clock = 0
-    for _ in range(n_frames):
+    while True:
         hdr = f.read(12)
-        assert hdr[:4] in (b"FRM0", b"RAW0")
+        if not hdr:
+            return
+        assert hdr[:4] in (b"FRM0", b"RAW0", b"FWD0", b"DET0", b"CMD0")
         fid, n = struct.unpack("<II", hdr[4:])
         data = b""
         while len(data) < n:
             data += f.read(n - len(data))
         got.append((hdr[:4], data))
-        det = int(fid % 2 == 0)
+        if hdr[:4] == b"CMD0":
+            f.write(f"A,{fid},{clock - 100000 + 17400},{clock - 100000 + 17500}\n".encode())
+            continue
+        det = int(fid % 2 == 0 or hdr[:4] == b"FWD0")
+        if hdr[:4] == b"DET0":
+            t = [clock + k for k in (0, 300, 1300, 15300, 15400, 15500)]
+            clock += 100000
+            box = ",10,20,30,40,0.900" if det else ""
+            f.write(f"D,{fid},{','.join(map(str, t))},{int(bool(box))}{box}\n".encode())
+            continue
         t = [clock + k for k in (0, 300, 1300, 15300, 15400)]  # first, rx, infer start/end, sent (us)
         clock += 100000
         time.sleep(0.016)  # really spend the 15.4 ms the timestamps claim
@@ -52,6 +64,14 @@ def main():
         frames.mkdir()
         for i in range(1, 5):
             Image.fromarray(np.random.randint(0, 256, (336, 336, 3), np.uint8)).save(frames / f"frame_{i:06d}.jpg")
+        det_rows, got_det = run(frames, Path(d) / "board_det.csv", "--det")
+        assert [m for m, _ in got_det] == [b"DET0", b"DET0", b"CMD0", b"DET0", b"DET0", b"CMD0"], got_det
+        assert len(got_det[0][1]) == 160 * 160 * 3
+        assert [int(r["n_boxes"]) for r in det_rows] == [0, 1, 0, 1]
+        assert det_rows[1]["boxes"] == "[[21.0, 42.0, 63.0, 84.0, 0.9]]"  # 160 px -> 336 px
+        assert float(det_rows[1]["e2e_ms"]) == 17.2 and float(det_rows[1]["board_ms"]) == 15.1
+        fwd_rows, got_fwd = run(frames, Path(d) / "board_fwd.csv", "--fwd")
+        assert all(m == b"FWD0" for m, _ in got_fwd) and all(int(r["detected"]) for r in fwd_rows)
         rows, got = run(frames, Path(d) / "board.csv")
         assert all(m == b"FRM0" for m, _ in got)
         _, got_raw = run(frames, Path(d) / "board_raw.csv", "--raw")
