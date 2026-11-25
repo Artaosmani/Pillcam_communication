@@ -8,4 +8,28 @@ Data/.DS_Store
 *.h5
 *.keras
 *.tflite
-runs/classifier*/
+Anomally_detection/runs/
+Anomally_detection/results/**/*.json
+Anomally_detection/results/**/*.csv
+
+# datasets and training weights stay out of git (kept on disk)
+Anomally_detection/Data/**/*.jpg
+Anomally_detection/Data/**/*.jpeg
+Anomally_detection/Data/**/*.png
+Anomally_detection/Data/negatives/
+Anomally_detection/Data/kvasir-capsule/
+Anomally_detection/Data/yolo-split/
+Anomally_detection/Data/frames*/
+Anomally_detection/Data/downloads/
+*.pt
+*.onnx
+*_openvino_model/
+.DS_Store
+PBS/drift/bbox_replay
+!Anomally_detection/results/**/*.tflite
+
+# Axon compiler working output (the header that matters is copied to Board/src/generated/)
+Board/axon/intermediate/
+Board/axon/logs/
+Board/axon/outputs/
+build/

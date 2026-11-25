@@ -7,6 +7,10 @@ paths:
   positives: Data/kvasir-seg-split/images    # {train,val,test}/*.jpg, the same split as YOLO26n
   boxes: labels/kavsir_bboxes.json           # polyp boxes, used for hard-negative crops
   capsule_polyps: Data/kvasir-capsule/polyp  # optional: Kvasir-Capsule polyp frames, only for the domain-shift eval
+  twins: labels/seg_twins.json               # Kvasir v1 polyp -> best Kvasir-SEG match (Classifier/twins.py)
+  twins_dir: Data/kvasir/kvasir-dataset/polyps
+  twin_max_rms: 19                           # <= this = cropped copy (copies 2..16, different images 23+)
+  splits: Data/splits.json                   # written on every run, read by YOLO/dataset.py (one shared split)
 
 extra_positives:
   # More polyp images, split like the negatives. Needed so both classes share the same image format: with only
@@ -23,7 +27,8 @@ negatives:
       video_regex: '^(?P<video>[0-9a-f]+)_(?P<frame>\d+)$'  # filename stem -> video id + frame number
       stride: 15                             # keep one frame per 15 (2 fps video exported at 30 fps)
       capsule: true                          # these frames feed the Kvasir-Capsule-only eval
-    - dir: Data/kvasir/kvasir-dataset/normal-cecum   # Kvasir v1, already on disk (overlaps HyperKvasir; de-duplicated)
+      test_videos: [131368cc17e44240]        # all 55 Kvasir-Capsule polyp frames are from this video: keep it out of train
+    # Kvasir v1 normal-cecum is not used: HyperKvasir cecum contains it, cropped, so the image hash can't de-duplicate it
     - dir: Data/kvasir/kvasir-dataset/ulcerative-colitis      # inflamed colon, no polyp
     - dir: Data/kvasir/kvasir-dataset/dyed-resection-margins  # site of a removed polyp, blue dye: a hard negative
   split: [0.8, 0.1, 0.1]     # train/val/test for negatives and extra positives, seeded, whole videos per split

@@ -1,0 +1,274 @@
+"""One command: frames -> classifier CSV -> YOLO box CSV -> bbox_replay -> latency figure + per-stage summary.
+
+python pipeline.py                                      # PC stand-in for the board (classifier on the PC)
+python pipeline.py --clf runs/pipeline/board.csv        # classifier CSV recorded from the board (Board/receiver.py)
+python pipeline.py --yolo runs/yolo26n/weights/best.onnx --threads 4 --out runs/pipeline_fp32
+
+Frames: Data/test/frames/frame_NNNNNN.jpg, 336×336 JPEG (q90, ~40 KB), the shared test split (Data/splits.json):
+Kvasir-SEG/Kvasir test polyps + test negatives, squashed to 336×336 the way the classifier is trained. Built once,
+with Data/test/labels.csv (frame_id,file,polyp,source) and Data/test/gt_boxes.csv (Kvasir-SEG boxes in 336 px).
+Outputs in --out: classifier.csv, boxes.csv (+ .timing.csv), bbox_replay_out.csv, latency_breakdown.png/.pdf,
+latency_stages.csv, latency_summary.json, frame_stages.csv + frame_stages.png (every stage of every frame, see
+frame_stages()). Every stage in the summary is labelled measured, host estimate or placeholder.
+"""
+import argparse
+import csv
+import json
+import os
+import random
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+ROOT = Path(__file__).resolve().parent
+PBS = ROOT.parent / "PBS"
+PY = sys.executable
+FRAME = 336
+BUDGET_MS = 100.0
+
+
+def make_frames(frames, seed=0):
+    """Write the replay frames + labels.csv + gt_boxes.csv from the test split. Order is a seeded shuffle."""
+    split = json.loads((ROOT / "Data/splits.json").read_text())["test"]
+    random.Random(seed).shuffle(split)
+    seg_labels = ROOT / "Data/kvasir-seg-split/labels/test"
+    frames.mkdir(parents=True)
+    with open(frames.parent / "labels.csv", "w", newline="") as fl, \
+            open(frames.parent / "gt_boxes.csv", "w", newline="") as fg:
+        wl, wg = csv.writer(fl), csv.writer(fg)
+        wl.writerow(["frame_id", "file", "polyp", "source"])
+        wg.writerow(["frame_id", "x_min", "y_min", "x_max", "y_max"])
+        for fid, (path, y) in enumerate(split, 1):
+            img = cv2.resize(cv2.imread(str(ROOT / path)), (FRAME, FRAME), interpolation=cv2.INTER_AREA)
+            name = f"frame_{fid:06d}.jpg"
+            cv2.imwrite(str(frames / name), img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            wl.writerow([fid, name, y, path])
+            lab = seg_labels / f"{Path(path).stem}.txt"
+            if "kvasir-seg-split" in path and lab.exists():
+                for _, cx, cy, w, h in np.loadtxt(lab, ndmin=2):
+                    wg.writerow([fid, *(round(v * FRAME, 1) for v in (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2))])
+    print(f"[frames] {len(split)} frames -> {frames}")
+
+
+def run(cmd, **kw):
+    print("[run]", " ".join(map(str, cmd)))
+    subprocess.run(list(map(str, cmd)), check=True, **kw)
+
+
+def build_replay():
+    """Compile bbox_replay with OpenMP (Homebrew libomp on macOS), as in PBS/README.md. Melwin's code is not touched."""
+    exe = PBS / "drift/bbox_replay"
+    src = [PBS / "drift" / f for f in ("bbox_replay.cpp", "src_drift/particle.cpp", "src_drift/channel.cpp")]
+    if exe.exists() and exe.stat().st_mtime > max(f.stat().st_mtime for f in src):
+        return exe
+    omp = Path("/opt/homebrew/opt/libomp")
+    flags = ["-Xpreprocessor", "-fopenmp", f"-I{omp}/include", f"-L{omp}/lib", "-lomp"] if omp.exists() else ["-fopenmp"]
+    run(["clang++" if omp.exists() else "g++", "-O3", "-std=c++17", *flags, *src, "-o", exe])
+    return exe
+
+
+def pct(v):
+    v = np.asarray(v, float)
+    return {"p50_ms": float(np.percentile(v, 50)), "p95_ms": float(np.percentile(v, 95)), "n": int(len(v))} if len(v) \
+        else {"p50_ms": None, "p95_ms": None, "n": 0}
+
+
+def end_to_end(clf, boxes, test_dir):
+    """Classifier + YOLO together on the replay frames: Kvasir-SEG frames with a correct box (IoU >= 0.5), polyp frames
+    with any box, and polyp-free frames that end with a box (false injections)."""
+    if not (test_dir / "labels.csv").exists():
+        return None
+    from YOLO.runner import iou
+    lab = {int(r["frame_id"]): int(r["polyp"]) for r in csv.DictReader(open(test_dir / "labels.csv"))}
+    gt, pred = {}, {}
+    for r in csv.DictReader(open(test_dir / "gt_boxes.csv")):
+        gt.setdefault(int(r["frame_id"]), []).append([float(r[k]) for k in ("x_min", "y_min", "x_max", "y_max")])
+    for r in boxes:
+        pred.setdefault(int(r["frame_id"]), []).append([float(r[k]) for k in ("x_min", "y_min", "x_max", "y_max")])
+    flagged = {int(r["frame_id"]) for r in clf if int(r["detected"])}
+    correct = sum(f in pred and any(iou(np.array(g), np.array(pred[f])).max() >= 0.5 for g in gt[f]) for f in gt)
+    pos, neg = [f for f, y in lab.items() if y], [f for f, y in lab.items() if not y]
+    return {"gt_box_frames": len(gt), "gt_box_frames_flagged": len(flagged & set(gt)), "gt_box_frames_correct_box": correct,
+            "polyp_frames": len(pos), "polyp_frames_with_box": sum(f in pred for f in pos),
+            "negative_frames": len(neg), "negative_frames_flagged": len(flagged & set(neg)),
+            "negative_frames_with_box": sum(f in pred for f in neg)}
+
+
+LOOP = [("frame_to_board", "frame → board (USB)", "#898781"), ("clf_pre", "classifier pre (board)", "#2a78d6"),
+        ("clf_infer", "classifier inference (Axon)", "#6250d6"), ("board_to_pc", "board → PC (USB)", "#c3c2b7"),
+        ("yolo", "YOLO26n (PC)", "#eb6834")]
+YOLO_PARTS = [("pre", "pre (resize, pad, to tensor)", "#2a78d6"), ("backbone", "backbone", "#eb6834"),
+              ("neck", "neck", "#1baf7a"), ("head", "head", "#eda100"),
+              ("post", "post (filter, NMS, rescale, sort)", "#6250d6")]  # dataviz reference palette, fixed order
+
+
+def frame_stages(out):
+    """One row per frame, every stage in ms -> frame_stages.csv, and a per-frame figure -> frame_stages.png.
+    detect_ms = board pre + inference + send + board -> PC + YOLO (= t_detect - t_capture in boxes.csv; frame -> board not
+    included). loop_ms = frame -> board + detect_ms + simulation (sum over the frame's boxes, bbox_replay runs them one
+    after another). YOLO and simulation columns are empty for frames the classifier did not flag."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from YOLO.runner import STEPS
+
+    tim = {r["frame_id"]: r for r in csv.DictReader(open(out / "boxes.timing.csv"))}
+    sim = {}
+    for r in csv.DictReader(open(out / "bbox_replay_out.csv")):
+        sim[r["frame_id"]] = sim.get(r["frame_id"], 0.0) + float(r["latency_ms"])
+    ns = lambda r, a, b: (int(r[b]) - int(r[a])) / 1e6
+    steps = [k for v in STEPS.values() for k in v]
+    cols = ["frame_id", "detected", "n_boxes", "frame_to_board", "clf_pre", "clf_infer", "board_send", "board_to_pc",
+            "yolo", "yolo_pre", "yolo_infer", "yolo_post", *steps, "simulation", "detect_ms", "loop_ms"]
+    rows = []
+    for r in csv.DictReader(open(out / "classifier.csv")):
+        t = tim.get(r["frame_id"])
+        row = {"frame_id": int(r["frame_id"]), "detected": int(r["detected"]), "n_boxes": t and int(t["n_boxes"]),
+               "frame_to_board": int(r.get("usb_down_ns") or 0) / 1e6, "clf_pre": ns(r, "t_rx_board_ns", "t_infer_start_ns"),
+               "clf_infer": ns(r, "t_infer_start_ns", "t_infer_end_ns"), "board_send": ns(r, "t_infer_end_ns", "t_sent_ns"),
+               "board_to_pc": int(r.get("usb_ns") or 0) / 1e6}
+        if t:
+            row.update(yolo=float(t["yolo_ms"]), yolo_pre=float(t["pre_ms"]), yolo_infer=float(t["infer_ms"]),
+                       yolo_post=float(t["post_ms"]), **{k: float(t[f"{k}_ms"]) for k in steps if t.get(f"{k}_ms")},
+                       simulation=sim.get(r["frame_id"], 0.0))
+        row["detect_ms"] = sum(row.get(k) or 0 for k in ("clf_pre", "clf_infer", "board_send", "board_to_pc", "yolo"))
+        row["loop_ms"] = row["frame_to_board"] + row["detect_ms"] + (row.get("simulation") or 0)
+        rows.append(row)
+    with open(out / "frame_stages.csv", "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=cols)
+        w.writeheader()
+        w.writerows({k: (f"{v:.4f}" if isinstance(v, float) else v) for k, v in r.items()} for r in rows)
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 7.5), dpi=200)
+    fig.patch.set_facecolor("#fcfcfb")
+    det = [r for r in rows if "yolo" in r]
+    vals = {k: np.array([r.get(f"yolo_{k}", r.get(k, 0.0)) or 0.0 for r in det]) for k, *_ in YOLO_PARTS}
+    x, bottom = np.arange(len(det)), np.zeros(len(det))
+    for k, label, c in YOLO_PARTS:
+        ax1.bar(x, vals[k], bottom=bottom, width=0.85, color=c, label=label)
+        bottom += vals[k]
+    ax1.set_title(f"Detection per frame: YOLO26n steps ({len(det)} frames the classifier flagged)", loc="left",
+                  fontsize=10)
+    ax1.set_xlabel("flagged frame (in replay order)", fontsize=9, color="#52514e")
+    x2, bottom = np.arange(len(rows)), np.zeros(len(rows))
+    for k, label, c in LOOP:
+        v = np.array([r.get(k) or 0.0 for r in rows]) + (np.array([r["board_send"] for r in rows]) if k == "clf_infer" else 0)
+        ax2.bar(x2, v, bottom=bottom, width=1.0, color=c, label=label, linewidth=0)
+        bottom += v
+    sim_v = [r["simulation"] for r in det if r.get("simulation")]
+    ax2.set_title("Full loop per frame: frame in → classification → (if flagged) detection.  Simulation per flagged "
+                  f"frame not drawn: p50 {np.percentile(sim_v, 50):.0f} ms" if sim_v else "Full loop per frame",
+                  loc="left", fontsize=10)
+    ax2.set_xlabel("frame (replay order)", fontsize=9, color="#52514e")
+    for ax in (ax1, ax2):
+        ax.set_facecolor("#fcfcfb")
+        ax.set_ylabel("ms", fontsize=9, color="#52514e")
+        ax.tick_params(colors="#52514e", labelsize=8, length=0)
+        ax.grid(axis="y", color="#e4e3df", linewidth=0.6), ax.set_axisbelow(True)
+        for sp in ax.spines.values():
+            sp.set_visible(False)
+        ax.legend(frameon=False, fontsize=8, ncol=3, loc="upper right")
+        ax.set_xlim(-1, ax.get_xlim()[1])
+    ax1.set_ylim(0, ax1.get_ylim()[1] * 1.25), ax2.set_ylim(0, ax2.get_ylim()[1] * 1.25)
+    fig.tight_layout()
+    fig.savefig(out / "frame_stages.png", facecolor=fig.get_facecolor())
+    print(f"[frames] per-frame stages -> {out / 'frame_stages.csv'}, frame_stages.png")
+    return rows
+
+
+def summary(out, board, yolo_model, threads, frames_dir):
+    """Per-stage p50/p95 with where/how each number was measured, plus the end-to-end counts."""
+    clf = list(csv.DictReader(open(out / "classifier.csv")))
+    tim = list(csv.DictReader(open(out / "boxes.timing.csv")))
+    rep = list(csv.DictReader(open(out / "bbox_replay_out.csv")))
+    det = [r for r in clf if int(r["detected"])]
+    ms = lambda r, a, b: (int(r[b]) - int(r[a])) / 1e6
+    host = "host estimate (PC TFLite interpreter, 1 thread, built-in kernels without XNNPACK; NOT the nRF54LM20 board)"
+    usb = [int(r["usb_ns"]) / 1e6 for r in det if r.get("usb_ns")]
+    s = {
+        "1_frame_to_board": {**pct([int(r["usb_down_ns"]) / 1e6 for r in clf if r.get("usb_down_ns")]),
+                             "label": "measured" if board else "placeholder",
+                             "how": "USB CDC-ACM host->board, from Board/receiver.py" if board else
+                             "not measured: needs the board (lab) or the pill radio link (real system)"},
+        "2a_board_preprocess": {**pct([ms(r, "t_rx_board_ns", "t_infer_start_ns") for r in clf]),
+                                "label": "measured" if board else "host estimate",
+                                "how": "board timer" if board else "PC: JPEG decode + area resize + normalise"},
+        "2b_board_inference": {**pct([ms(r, "t_infer_start_ns", "t_infer_end_ns") for r in clf]),
+                               "label": "measured" if board else "host estimate", "how": "board cycle counter" if board else host},
+        "3_board_to_pc": {**pct(usb), "label": "measured" if usb else "placeholder",
+                          "how": "USB CDC-ACM board->host incl. frame bytes, Board/receiver.py" if usb else
+                          "not measured on the PC-only run (0 in the timeline)"},
+        "4_yolo_pc_cpu": {**pct([float(r["yolo_ms"]) for r in tim]), "label": "measured",
+                          "how": f"{yolo_model.name} ({'OpenVINO, FP16 compute on ARM' if yolo_model.is_dir() else 'onnxruntime'}), "
+                                 f"PC CPU, {threads} threads, pre+infer+post"},
+        "4a_yolo_pre": pct([float(r["pre_ms"]) for r in tim]),
+        "4b_yolo_infer": pct([float(r["infer_ms"]) for r in tim]),
+        "4c_yolo_post": pct([float(r["post_ms"]) for r in tim]),
+        "5_simulation_per_box": {**pct([float(r["latency_ms"]) for r in rep]), "label": "measured",
+                                 "how": "bbox_replay process_box() wall time (full PBS run per box until the lookup table exists)"},
+    }
+    boxes = list(csv.DictReader(open(out / "boxes.csv")))
+    first = {}
+    for b in boxes:  # one detection latency per frame
+        first.setdefault(b["frame_id"], ms(b, "t_capture_ns", "t_detect_ns"))
+    total = pct(list(first.values()))
+    s["detection_total"] = {**total, "budget_p95_ms": BUDGET_MS,
+                            "within_budget": total["p95_ms"] is not None and total["p95_ms"] <= BUDGET_MS,
+                            "label": "measured" if board else "host estimate",
+                            "how": "t_detect - t_capture per frame with boxes = stage 2 + 3 + 4 (stage 1 not included)"}
+    s["counts"] = {"frames": len(clf), "detected": len(det), "frames_with_boxes": len(first), "boxes": len(boxes)}
+    s["end_to_end"] = end_to_end(clf, boxes, frames_dir.parent)
+    (out / "latency_summary.json").write_text(json.dumps(s, indent=2))
+    for k, v in s.items():
+        if v and "p50_ms" in v and v["p50_ms"] is not None:
+            print(f"[latency] {k:22s} p50 {v['p50_ms']:8.2f}  p95 {v['p95_ms']:8.2f} ms  {v.get('label', '')}")
+    print(f"[latency] counts {s['counts']}")
+    print(f"[end-to-end] {s['end_to_end']}")
+
+
+def main():
+    a = parse_args()
+    out = a.out if a.out.is_absolute() else ROOT / a.out
+    out.mkdir(parents=True, exist_ok=True)
+    if not a.frames.exists():
+        make_frames(a.frames)
+    if a.clf:
+        clf = a.clf
+    else:
+        clf = out / "classifier.csv"
+        run([PY, ROOT / "Classifier/run_csv.py", "--frames", a.frames, "--model", a.classifier, "--out", clf,
+             "--labels", a.frames.parent / "labels.csv"])
+    if clf != out / "classifier.csv":
+        (out / "classifier.csv").write_bytes(Path(clf).read_bytes())
+    run([PY, ROOT / "YOLO/run_boxes.py", "--clf", out / "classifier.csv", "--frames", a.frames, "--model", a.yolo,
+         "--threads", a.threads, "--profile", "--out", out / "boxes.csv"])
+    replay = build_replay()
+    run([replay, "--csv", out / "boxes.csv", "--out", out / "bbox_replay_out.csv", *shlex.split(a.replay_args)])
+    run([PY, PBS / "visualizers/plot_latency_breakdown.py", "--boxes", out / "boxes.csv",
+         "--server", out / "bbox_replay_out.csv", "--out-dir", out, "--max-bars", 20,
+         "--subtitle", "detection = measured (" + ("board" if a.clf else "PC stand-in for the board") +
+         " + YOLO); capture and network still fake; lookup = full PBS run per box"],
+        cwd=PBS / "visualizers")
+    summary(out, bool(a.clf), a.yolo, a.threads, a.frames)
+    frame_stages(out)
+
+
+def parse_args():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--frames", type=Path, default=ROOT / "Data/test/frames")
+    p.add_argument("--classifier", type=Path, default=ROOT / "runs/classifier_84/model_int8.tflite")
+    p.add_argument("--clf", type=Path, help="use this classifier CSV (e.g. from the board) instead of running it here")
+    p.add_argument("--yolo", type=Path, default=ROOT / "runs/yolo26n/weights/best_openvino_model")
+    p.add_argument("--threads", type=int, default=4)
+    p.add_argument("--out", type=Path, default=Path("runs/pipeline"))
+    p.add_argument("--replay-args", default="", help='passed to bbox_replay, e.g. --replay-args="--rows 20"')
+    return p.parse_args()
+
+
+if __name__ == "__main__":
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+    main()

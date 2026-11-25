@@ -1,0 +1,6 @@
+# Axon compiler input for the box detector (YOLO/export_axon.py). Same use as polyp_compile.yaml:
+#   python axons_ml_nn_compiler_executor.py <repo>/Board/axon/det_compile.yaml
+det:
+  model_name: det                                    # -> nrf_axon_model_det_.h, symbol model_det
+  tflite_model: <repo>/Anomally_detection/runs/yolo26n_axon/weights/best_axon_int8.tflite
+  classification_labels:

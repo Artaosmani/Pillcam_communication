@@ -1,0 +1,4 @@
+# VID/PID/strings for sample_usbd_init_device() (Zephyr's USB sample helper)
+source "samples/subsys/usb/common/Kconfig.sample_usbd"
+
+source "Kconfig.zephyr"

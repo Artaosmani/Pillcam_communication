@@ -1,0 +1,49 @@
+{
+  "split": "kvasir-capsule (domain shift)",
+  "threshold": {
+    "target_recall": 0.95,
+    "float": {
+      "logit": 0.5039613842964172,
+      "prob": 0.623389818612833
+    },
+    "int8": {
+      "raw": 45,
+      "logit": 1.5090867280960083,
+      "prob": 0.818925820559992
+    }
+  },
+  "float": {
+    "n": 312,
+    "positives": 55,
+    "negatives": 257,
+    "threshold": 0.5039613842964172,
+    "recall": 0.0,
+    "precision": 0.0,
+    "f1": 0.0,
+    "specificity": 1.0,
+    "roc_auc": 0.7361867704280155,
+    "confusion_matrix": {
+      "tn": 257,
+      "fp": 0,
+      "fn": 55,
+      "tp": 0
+    }
+  },
+  "int8": {
+    "n": 312,
+    "positives": 55,
+    "negatives": 257,
+    "threshold": 45,
+    "recall": 0.0,
+    "precision": 0.0,
+    "f1": 0.0,
+    "specificity": 0.9961089494163424,
+    "roc_auc": 0.6601344181110719,
+    "confusion_matrix": {
+      "tn": 256,
+      "fp": 1,
+      "fn": 55,
+      "tp": 0
+    }
+  }
+}
