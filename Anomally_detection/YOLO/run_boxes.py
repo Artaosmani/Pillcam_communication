@@ -7,7 +7,8 @@ Reads the classifier CSV (frame_id,t_rx_board_ns,t_infer_start_ns,t_infer_end_ns
 and runs YOLO only on rows with detected=1, in frame_id order. Writes:
   boxes.csv   frame_id,track_id,t_capture_ns,t_detect_ns,t_send_ns,x_min,y_min,x_max,y_max,img_w,img_h,confidence
               (same layout as PBS/drift/data/boxes_fake.csv; absolute pixels, origin top-left; one row per box)
-  <out>.timing.csv  frame_id,n_boxes,pre_ms,infer_ms,post_ms,yolo_ms  (every detected frame, also those with no box)
+  <out>.timing.csv  frame_id,n_boxes,pre_ms,infer_ms,post_ms,yolo_ms + every step of runner.STEPS in ms
+              (every detected frame, also those with no box; backbone/neck/head only with --profile)
 Timeline per frame (replay): t_capture = t_rx_board (frame arrives at the board), t_detect = t_sent + usb_ns (the
 board -> PC transfer, 0 if not measured) + the measured YOLO time, t_send = t_detect + the time to format the rows.
 So t_detect - t_capture is board/stand-in classifier + USB + YOLO, without the gap between the classifier pass and
@@ -24,7 +25,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from runner import Detector, frame_paths, iou  # noqa: E402  (no TF / torch in this process: they clash with OpenVINO)
+from runner import STEPS, Detector, frame_paths, iou  # noqa: E402  (no TF / torch in this process: they clash with OpenVINO)
 
 COLUMNS = ["frame_id", "track_id", "t_capture_ns", "t_detect_ns", "t_send_ns",
            "x_min", "y_min", "x_max", "y_max", "img_w", "img_h", "confidence"]
@@ -57,7 +58,7 @@ class Tracker:
 def main():
     a = parse_args()
     conf = a.conf if a.conf is not None else json.loads((a.model.parent / "deploy.json").read_text())["conf"]
-    det = Detector(a.model, threads=a.threads, conf=conf)
+    det = Detector(a.model, threads=a.threads, conf=conf, profile=a.profile)
     paths = frame_paths(a.frames)
     with open(a.clf) as f:
         rows = sorted((r for r in csv.DictReader(f) if int(r["detected"])), key=lambda r: int(r["frame_id"]))
@@ -69,7 +70,8 @@ def main():
     with open(a.out, "w", newline="") as fb, open(a.out.with_suffix(".timing.csv"), "w", newline="") as ft:
         wb, wt = csv.writer(fb), csv.writer(ft)
         wb.writerow(COLUMNS)
-        wt.writerow(["frame_id", "n_boxes", "pre_ms", "infer_ms", "post_ms", "yolo_ms"])
+        steps = [k for v in STEPS.values() for k in v]
+        wt.writerow(["frame_id", "n_boxes", "pre_ms", "infer_ms", "post_ms", "yolo_ms", *(f"{k}_ms" for k in steps)])
         for r in rows:
             fid = int(r["frame_id"])
             img = cv2.imread(str(paths[fid]))  # decode stands in for receiving the frame bytes; not timed
@@ -87,7 +89,7 @@ def main():
                 line[3], line[4] = t_detect, t_send
             wb.writerows(lines)
             wt.writerow([fid, len(boxes), *(f"{s[k] * 1e3:.3f}" for k in ("pre", "infer", "post")),
-                         f"{yolo_ns / 1e6:.3f}"])
+                         f"{yolo_ns / 1e6:.3f}", *(f"{s[k] * 1e3:.4f}" if k in s else "" for k in steps)])
             n_box += len(boxes)
     print(f"[boxes] {len(rows)} detected frames -> {n_box} boxes (conf {conf:.3f}, {a.threads} threads) -> {a.out}")
 
@@ -102,6 +104,7 @@ def parse_args():
     p.add_argument("--warmup", type=int, default=10)
     p.add_argument("--track-iou", type=float, default=0.3)
     p.add_argument("--track-gap", type=int, default=1, help="frames a track may skip")
+    p.add_argument("--profile", action="store_true", help="OpenVINO per-layer counters: backbone/neck/head split")
     p.add_argument("--out", type=Path, required=True)
     return p.parse_args()
 

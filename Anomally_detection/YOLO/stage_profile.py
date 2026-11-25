@@ -4,8 +4,8 @@ python YOLO/stage_profile.py [--weights runs/yolo26n/weights/best.pt] [--threads
 
 Detection, per frame (336×336 test frames, like bench.py), split into:
   pre   resize (letterbox scale to the model input), pad (114 border), to tensor (BGR->RGB, HWC->CHW, /255)
-  infer backbone (layers 0-10), neck (11-22), head (23, Detect incl. box decode), runtime (wall time not in any
-        layer: input copy, scheduling), from OpenVINO's per-layer counters (PERF_COUNT on)
+  infer backbone (layers 0-10), neck (11-22), head (23, Detect incl. box decode): the inference wall time split in
+        proportion to OpenVINO's per-layer counters (PERF_COUNT on; see runner.Detector)
   post  confidence filter (+ cx,cy,w,h -> corners), NMS (OpenVINO export has the one-to-many head; 0 for the
         end-to-end ONNX head), rescale + clip to the frame, sort
 Classification: the board's measured preprocessing + Axon inference from results/latency_summary.json (one stage each).
@@ -13,9 +13,7 @@ Writes results/stage_times.json and results/stage_times.png.
 """
 import argparse
 import json
-import re
 import sys
-import time
 from pathlib import Path
 
 import cv2
@@ -27,74 +25,13 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from runner import Detector  # noqa: E402
+from runner import STEPS, Detector  # noqa: E402
 from src import DEFAULT_CONFIG, ROOT, resolve  # noqa: E402
 
 FRAME = 336
-PARTS = [("pre", "resize"), ("pre", "pad"), ("pre", "to tensor"),
-         ("infer", "backbone"), ("infer", "neck"), ("infer", "head"), ("infer", "runtime"),
-         ("post", "conf filter"), ("post", "NMS"), ("post", "rescale + clip"), ("post", "sort")]
+PARTS = [(g, k) for g, ks in STEPS.items() for k in ks]  # (stage, step key) in pipeline order
+LABEL = {"to_tensor": "to tensor", "conf_filter": "conf filter", "nms": "NMS", "rescale": "rescale + clip"}
 COLORS = {"pre": "#2a78d6", "infer": "#eb6834", "post": "#1baf7a"}  # dataviz reference palette, slots 1-3
-
-
-def part(layer):
-    return "backbone" if layer <= 10 else "neck" if layer <= 22 else "head"
-
-
-def layer_times(req):
-    """ms per model part from OpenVINO's counters. Fused Subgraph/Reorder nodes can carry another layer's name, so
-    they go to the layer of the node that ran just before them (counters are in execution order)."""
-    # ponytail: attribution heuristic for fused nodes; exact per-layer split needs an unfused profile (ORT)
-    out, layer = {"backbone": 0.0, "neck": 0.0, "head": 0.0}, 0
-    for p in req.profiling_info:
-        m = re.search(r"model\.(\d+)", p.node_name)
-        if m and p.node_type not in ("Subgraph", "Reorder"):
-            layer = int(m.group(1))
-        out[part(layer)] += p.real_time.total_seconds() * 1e3
-    return out
-
-
-def run_frame(det, img):
-    """Detector.preprocess / _run / postprocess, step by step with a clock between steps. Returns (boxes, ms)."""
-    t, c = {}, time.perf_counter
-    t0 = c()
-    h, w = img.shape[:2]
-    r = min(det.size / h, det.size / w)
-    nw, nh = round(w * r), round(h * r)
-    px, py = (det.size - nw) / 2, (det.size - nh) / 2
-    im = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_LINEAR) if (nw, nh) != (w, h) else img
-    t1 = c()
-    top, left = round(py - 0.1), round(px - 0.1)
-    im = cv2.copyMakeBorder(im, top, det.size - nh - top, left, det.size - nw - left, cv2.BORDER_CONSTANT,
-                            value=(114, 114, 114))
-    t2 = c()
-    x = np.ascontiguousarray(im[..., ::-1].transpose(2, 0, 1)[None], dtype=np.float32) / 255.0
-    t3 = c()
-    out = det._run(x)
-    t4 = c()
-    o = out[0]
-    if o.shape[-1] == 6:  # end-to-end head (ONNX export): no NMS
-        b = o[o[:, 4] >= det.conf, :5]
-        t5 = t5n = c()
-    else:  # one-to-many head (OpenVINO export): 1×5×A cx,cy,w,h,conf -> threshold, xyxy, NMS
-        p = o.T[o[4] >= det.conf]
-        xyxy = np.c_[p[:, :2] - p[:, 2:4] / 2, p[:, :2] + p[:, 2:4] / 2]
-        t5 = c()
-        keep = cv2.dnn.NMSBoxes(np.c_[xyxy[:, :2], p[:, 2:4]].tolist(), p[:, 4].tolist(), det.conf, det.iou)
-        b = np.c_[xyxy, p[:, 4]][np.asarray(keep, int).ravel()] if len(p) else np.zeros((0, 5))
-        t5n = c()
-    b = b.astype(np.float64)
-    b[:, [0, 2]] = ((b[:, [0, 2]] - left) / r).clip(0, w)
-    b[:, [1, 3]] = ((b[:, [1, 3]] - top) / r).clip(0, h)
-    t6 = c()
-    b = b[np.argsort(-b[:, 4])]
-    t7 = c()
-    ms = lambda a, z: (z - a) * 1e3
-    t = {"resize": ms(t0, t1), "pad": ms(t1, t2), "to tensor": ms(t2, t3), "infer_wall": ms(t3, t4),
-         "conf filter": ms(t4, t5), "NMS": ms(t5, t5n), "rescale + clip": ms(t5n, t6), "sort": ms(t6, t7)}
-    layers = layer_times(det.req)
-    t.update(layers, runtime=max(t["infer_wall"] - sum(layers.values()), 0.0))
-    return b, t
 
 
 def stats(v):
@@ -120,7 +57,7 @@ def figure(det_mean, cls, path):
         x0 = 0.0
         for g, n, v in segs:
             top.barh(y, v, left=x0, height=0.6, color=COLORS[g], edgecolor="#fcfcfb", linewidth=2)
-            if v > 1.6:  # label only segments wide enough to hold text
+            if v > 1.2:  # label only segments wide enough to hold text
                 top.text(x0 + v / 2, y, n, ha="center", va="center", color="white", fontsize=8)
             x0 += v
         top.text(x0 + 0.2, y, f"{x0:.1f} ms", va="center", fontsize=9, color="#0b0b0b")
@@ -137,7 +74,7 @@ def figure(det_mean, cls, path):
     bot.barh(range(len(PARTS)), vals, height=0.7, color=[COLORS[g] for g, _ in PARTS])
     for y, v in enumerate(vals):
         bot.text(v + 0.05, y, f"{v:.3f} ms" if v < 0.1 else f"{v:.2f} ms", va="center", fontsize=8, color="#0b0b0b")
-    bot.set_yticks(range(len(PARTS)), [n for _, n in PARTS], fontsize=8.5, color="#52514e")
+    bot.set_yticks(range(len(PARTS)), [LABEL.get(n, n) for _, n in PARTS], fontsize=8.5, color="#52514e")
     bot.invert_yaxis()
     bot.set_xlim(0, max(vals) * 1.15)
     bot.set_xlabel("ms per frame", color="#52514e", fontsize=9)
@@ -160,29 +97,21 @@ def main():
     cfg = yaml.safe_load(a.config.read_text())
     w = a.weights
     conf = json.loads((w.parent / "deploy.json").read_text())["conf"]
-    det = Detector(w.with_name(f"{w.stem}_openvino_model"), threads=a.threads, conf=conf)
-    # recompile with per-layer counters; same model, threads and hint as Detector
-    import openvino as ov
-    xml = next(w.with_name(f"{w.stem}_openvino_model").glob("*.xml"))
-    det.req = ov.Core().compile_model(str(xml), "CPU", {"INFERENCE_NUM_THREADS": a.threads, "PERFORMANCE_HINT": "LATENCY",
-                                                         "PERF_COUNT": True}).create_infer_request()
-    det._run = lambda x: det.req.infer({0: x})[0].copy()
+    det = Detector(w.with_name(f"{w.stem}_openvino_model"), threads=a.threads, conf=conf, profile=True)
 
     src = sorted((resolve(cfg["paths"]["source"]) / "images" / "test").glob("*.jpg"))
     frames = [cv2.resize(cv2.imread(str(f)), (FRAME, FRAME), interpolation=cv2.INTER_AREA) for f in src]
-    # check: the step-by-step version gives exactly Detector's boxes
-    for f in frames[:10]:
-        assert np.array_equal(run_frame(det, f)[0], det(f)[0]), "stage timing diverged from Detector"
     for i in range(a.warmup):
-        run_frame(det, frames[i % len(frames)])
+        det(frames[i % len(frames)])
     times = {}
     for i in range(a.runs):
-        _, t = run_frame(det, frames[i % len(frames)])
-        t["pre"] = t["resize"] + t["pad"] + t["to tensor"]
-        t["post"] = t["conf filter"] + t["NMS"] + t["rescale + clip"] + t["sort"]
-        t["total"] = t["pre"] + t["infer_wall"] + t["post"]
+        _, t = det(frames[i % len(frames)])
+        t["total"] = t["pre"] + t["infer"] + t["post"]
         for k, v in t.items():
-            times.setdefault(k, []).append(v)
+            times.setdefault(k, []).append(v * 1e3)
+    # the steps are timed inside pre/post, so they must add up to them (a few µs of clock calls aside)
+    for g in ("pre", "infer", "post"):
+        assert abs(sum(np.mean(times[k]) for k in STEPS[g]) - np.mean(times[g])) < 0.05, g
     det_stats = {k: stats(v) for k, v in times.items()}
 
     s = json.loads((ROOT / "results/latency_summary.json").read_text())
@@ -199,8 +128,8 @@ def main():
     print("| Stage | Step | p50 ms | p95 ms | mean ms |\n|---|---|---|---|---|")
     for g, n in PARTS:
         v = det_stats[n]
-        print(f"| {g} | {n} | {v['p50_ms']:.3f} | {v['p95_ms']:.3f} | {v['mean_ms']:.3f} |")
-    for k in ("pre", "infer_wall", "post", "total"):
+        print(f"| {g} | {LABEL.get(n, n)} | {v['p50_ms']:.3f} | {v['p95_ms']:.3f} | {v['mean_ms']:.3f} |")
+    for k in ("pre", "infer", "post", "total"):
         v = det_stats[k]
         print(f"| **{k}** | | {v['p50_ms']:.2f} | {v['p95_ms']:.2f} | {v['mean_ms']:.2f} |")
     print(f"\nclassification (board): pre {cls['pre']:.2f} + infer {cls['infer']:.2f} = {cls['pre'] + cls['infer']:.2f} ms")
